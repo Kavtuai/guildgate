@@ -1,0 +1,84 @@
+classDiagram
+  direction LR
+
+  class Application {
+    +HTTP routes
+    +Database transactions
+    +Policy decisions
+    +Schema validation
+  }
+
+  class GuildGateKernel {
+    +action(definition)
+    +execute(action, request)
+    +createSession(input)
+    +revokeUserSessions(userId)
+  }
+
+  class SessionManager {
+    +create(input)
+    +resolve(token)
+    +revokeToken(token)
+    +revokeAll(userId)
+  }
+
+  class DiscordOAuthClient {
+    +beginLogin(input)
+    +completeLogin(input)
+    +getAccessToken(userId)
+    +revoke(userId)
+  }
+
+  class DiscordGuildAuthorizer {
+    +inspect(input)
+    +require(policy)
+  }
+
+  class GuildGateStores {
+    <<interface>>
+    +SessionStore sessions
+    +OAuthStateStore oauthStates
+    +OAuthCredentialStore credentials
+    +RateLimitStore rateLimits
+    +CacheStore cache
+    +IdempotencyStore idempotency
+    +LockStore locks
+    +AuditStore audit
+    +OutboxStore outbox
+    +PolicyStore policies
+  }
+
+  class RealtimeHub {
+    +attach(connection)
+    +subscribe(channel)
+    +publish(event)
+    +revokeSession(sessionIdHash)
+  }
+
+  class FrameworkAdapter {
+    <<interface>>
+    +translateRequest()
+    +writeResponse()
+  }
+
+  class DiscordAPI {
+    <<external>>
+  }
+
+  class DatabaseOrCache {
+    <<external>>
+  }
+
+  Application --> FrameworkAdapter
+  FrameworkAdapter --> GuildGateKernel
+  Application --> GuildGateKernel
+  GuildGateKernel --> SessionManager
+  GuildGateKernel --> GuildGateStores
+  DiscordOAuthClient --> GuildGateKernel
+  DiscordOAuthClient --> GuildGateStores
+  DiscordOAuthClient --> DiscordAPI
+  DiscordGuildAuthorizer --> DiscordOAuthClient
+  DiscordGuildAuthorizer --> DiscordAPI
+  RealtimeHub --> SessionManager
+  RealtimeHub --> GuildGateStores
+  GuildGateStores --> DatabaseOrCache

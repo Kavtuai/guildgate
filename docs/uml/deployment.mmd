@@ -1,0 +1,19 @@
+flowchart LR
+  B[Browser] -->|HTTPS| P[Reverse proxy]
+  P --> A1[Dashboard instance A]
+  P --> A2[Dashboard instance B]
+
+  A1 --> D[(Durable database)]
+  A2 --> D
+  A1 --> R[(Redis or atomic temporary store)]
+  A2 --> R
+  A1 --> X[Discord API]
+  A2 --> X
+
+  D -->|credentials audit policies outbox| W[Outbox worker]
+  W --> Q[Realtime transport or event bus]
+  Q --> A1
+  Q --> A2
+
+  note1[Application controls schema migrations backup retention and proxy trust]
+  D --- note1

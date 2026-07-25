@@ -1,0 +1,30 @@
+sequenceDiagram
+  autonumber
+  actor Browser
+  participant App as Application
+  participant OAuth as DiscordOAuthClient
+  participant State as OAuthStateStore
+  participant Discord as Discord OAuth2 API
+  participant Credentials as OAuthCredentialStore
+  participant Session as SessionManager
+
+  Browser->>App: GET /auth/discord
+  App->>OAuth: beginLogin(returnTo, locale)
+  OAuth->>State: put(hash(state), hash(browser nonce), expiry)
+  OAuth-->>App: authorization URL and HttpOnly nonce cookie
+  App-->>Browser: Set-Cookie and redirect
+  Browser->>Discord: authorization request with state
+  Discord-->>Browser: redirect with code and state
+  Browser->>App: GET callback + nonce cookie
+  App->>OAuth: completeLogin(code, state, nonce)
+  OAuth->>State: consume(hash(state))
+  State-->>OAuth: one record or null
+  OAuth->>Discord: exchange code
+  Discord-->>OAuth: access and refresh tokens
+  OAuth->>Discord: GET current user and guilds
+  Discord-->>OAuth: user and guild list
+  OAuth->>Credentials: store encrypted token record
+  OAuth->>Session: create new opaque session
+  Session-->>OAuth: raw token once and stored hash
+  OAuth-->>App: user, guilds, session cookie, local return path
+  App-->>Browser: clear nonce cookie, set session cookie, redirect

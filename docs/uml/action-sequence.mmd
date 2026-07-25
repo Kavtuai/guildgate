@@ -1,0 +1,39 @@
+sequenceDiagram
+  autonumber
+  actor Browser
+  participant Adapter as HTTP Adapter
+  participant Kernel as GuildGate Kernel
+  participant Session as SessionStore
+  participant Policy as PolicyStore
+  participant Limit as RateLimitStore
+  participant Idem as IdempotencyStore
+  participant Lock as LockStore
+  participant App as Application execute()
+  participant Cache as CacheStore
+  participant Outbox as OutboxStore
+  participant Audit as AuditStore
+
+  Browser->>Adapter: PATCH + cookie + CSRF + idempotency key
+  Adapter->>Kernel: execute(action, request)
+  Kernel->>Session: resolve(hash(token))
+  Session-->>Kernel: session / missing / rotated
+  Kernel->>Kernel: exact origin and CSRF checks
+  Kernel->>Kernel: parse input and resolve resource
+  Kernel->>Policy: maintenance and block checks
+  Policy-->>Kernel: current policy decision
+  Kernel->>Limit: atomic hit(action subject)
+  Limit-->>Kernel: allowed, remaining, reset
+  Kernel->>Kernel: application or Discord authorization
+  Kernel->>Idem: begin(key, request hash)
+  Idem-->>Kernel: started / replay / conflict / inflight
+  Kernel->>Lock: acquire(resource lease)
+  Lock-->>Kernel: acquired
+  Kernel->>App: execute(context, parsed input, abort signal)
+  App-->>Kernel: committed result
+  Kernel->>Cache: deleteByTags(tags)
+  Kernel->>Outbox: enqueue(event)
+  Kernel->>Idem: complete(key, result)
+  Kernel->>Audit: write(result and policy version)
+  Kernel->>Lock: release(compare token)
+  Kernel-->>Adapter: typed result and session metadata
+  Adapter-->>Browser: response and optional rotated cookie

@@ -1,0 +1,28 @@
+sequenceDiagram
+  autonumber
+  actor Browser
+  participant Transport as WebSocket Transport
+  participant Hub as RealtimeHub
+  participant Session as SessionManager
+  participant Limit as RateLimitStore
+  participant Authz as Application Authorizer
+
+  Browser->>Transport: connection with Origin and session cookie
+  Transport->>Hub: attach(connection, origin, session token)
+  Hub->>Session: resolve(token)
+  Session-->>Hub: active session
+  Hub-->>Browser: ready
+  Browser->>Transport: subscribe guild:123
+  Transport->>Hub: subscribe(connection, channel)
+  Hub->>Authz: authorize(session, channel)
+  Authz-->>Hub: allowed
+  Hub-->>Browser: subscribed
+  Browser->>Transport: client message
+  Transport->>Hub: acceptMessage(payload)
+  Hub->>Limit: atomic message limit hit
+  Limit-->>Hub: allowed
+  Hub-->>Transport: parsed payload
+  Note over Hub: Publish checks channel membership and buffered bytes
+  Hub-->>Browser: versioned event
+  Session-->>Hub: session revoked by application
+  Hub-->>Browser: close 1008

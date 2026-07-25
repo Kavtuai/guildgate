@@ -1,0 +1,90 @@
+{
+  "name": "@kavtuai/guildgate",
+  "version": "0.1.0",
+  "description": "Security and control primitives for Discord bot dashboards.",
+  "type": "module",
+  "license": "MIT",
+  "author": "kavtuai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kavtuai/guildgate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kavtuai/guildgate/issues"
+  },
+  "homepage": "https://github.com/kavtuai/guildgate#readme",
+  "keywords": [
+    "discord",
+    "dashboard",
+    "oauth2",
+    "security",
+    "rate-limit",
+    "cache",
+    "websocket",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "docs",
+    "README.md",
+    "README.tr.md",
+    "CHANGELOG.md",
+    "TEST_REPORT.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./discord": {
+      "types": "./dist/discord.d.ts",
+      "import": "./dist/discord.js"
+    },
+    "./fastify": {
+      "types": "./dist/fastify.d.ts",
+      "import": "./dist/fastify.js"
+    },
+    "./express": {
+      "types": "./dist/express.d.ts",
+      "import": "./dist/express.js"
+    },
+    "./redis": {
+      "types": "./dist/redis.d.ts",
+      "import": "./dist/redis.js"
+    },
+    "./realtime": {
+      "types": "./dist/realtime.d.ts",
+      "import": "./dist/realtime.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    }
+  },
+  "bin": {
+    "guildgate-doctor": "./bin/guildgate-doctor.mjs",
+    "guildgate-writing-check": "./bin/guildgate-writing-check.mjs"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "test": "npm run build && npm run writing:check && node --test tests/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run pack:check",
+    "writing:check": "node ./bin/guildgate-writing-check.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,298 @@
+import type {
+  AuditEvent,
+  BlockRecord,
+  CacheEntry,
+  IdempotencyBeginResult,
+  IdempotencyRecord,
+  MaintenanceState,
+  OAuthCredentialRecord,
+  OAuthStateRecord,
+  OutboxRecord,
+  RateLimitHitInput,
+  RateLimitHitResult,
+  SessionRecord,
+} from "./types.js";
+import type { GuildGateStores } from "./stores.js";
+
+interface RateBucket {
+  count: number;
+  resetAtMs: number;
+}
+
+interface LockEntry {
+  token: string;
+  expiresAtMs: number;
+}
+
+export interface MemoryStoreBundle extends GuildGateStores {
+  inspect(): {
+    sessions: SessionRecord[];
+    audit: AuditEvent[];
+    outbox: OutboxRecord[];
+    blocks: BlockRecord[];
+  };
+  clear(): void;
+}
+
+export function createMemoryStoreBundle(): MemoryStoreBundle {
+  const sessions = new Map<string, SessionRecord>();
+  const states = new Map<string, OAuthStateRecord>();
+  const credentials = new Map<string, OAuthCredentialRecord>();
+  const rateBuckets = new Map<string, RateBucket>();
+  const cache = new Map<string, CacheEntry>();
+  const idempotency = new Map<string, IdempotencyRecord>();
+  const locks = new Map<string, LockEntry>();
+  const audit: AuditEvent[] = [];
+  const outbox: OutboxRecord[] = [];
+  const blocks = new Map<string, BlockRecord>();
+  let policyVersion = 1;
+  let maintenance: MaintenanceState = {
+    enabled: false,
+    allowOwners: true,
+    updatedAt: new Date(0).toISOString(),
+  };
+
+  const blockKey = (type: BlockRecord["subjectType"], id: string) => `${type}:${id}`;
+  const credentialKey = (provider: string, userId: string) => `${provider}:${userId}`;
+
+  const bundle: MemoryStoreBundle = {
+    sessions: {
+      async get(idHash) {
+        return sessions.get(idHash) ?? null;
+      },
+      async set(record) {
+        sessions.set(record.idHash, structuredClone(record));
+      },
+      async delete(idHash) {
+        sessions.delete(idHash);
+      },
+      async listByUser(userId) {
+        return [...sessions.values()]
+          .filter((record) => record.userId === userId)
+          .map((record) => structuredClone(record));
+      },
+    },
+
+    oauthStates: {
+      async put(record) {
+        states.set(record.stateHash, structuredClone(record));
+      },
+      async consume(stateHash, nowIso) {
+        const record = states.get(stateHash);
+        states.delete(stateHash);
+        if (!record || record.expiresAt <= nowIso) return null;
+        return structuredClone(record);
+      },
+    },
+
+    credentials: {
+      async get(provider, userId) {
+        const record = credentials.get(credentialKey(provider, userId));
+        return record ? structuredClone(record) : null;
+      },
+      async set(record) {
+        credentials.set(credentialKey(record.provider, record.userId), structuredClone(record));
+      },
+      async delete(provider, userId) {
+        credentials.delete(credentialKey(provider, userId));
+      },
+    },
+
+    rateLimits: {
+      async hit(input: RateLimitHitInput): Promise<RateLimitHitResult> {
+        const cost = input.cost ?? 1;
+        const current = rateBuckets.get(input.key);
+        const bucket = !current || current.resetAtMs <= input.nowMs
+          ? { count: 0, resetAtMs: input.nowMs + input.windowMs }
+          : current;
+        const allowed = bucket.count + cost <= input.limit;
+        if (allowed) bucket.count += cost;
+        rateBuckets.set(input.key, bucket);
+        return {
+          allowed,
+          limit: input.limit,
+          remaining: Math.max(0, input.limit - bucket.count),
+          resetAtMs: bucket.resetAtMs,
+          retryAfterMs: allowed ? 0 : Math.max(0, bucket.resetAtMs - input.nowMs),
+        };
+      },
+      async reset(key) {
+        rateBuckets.delete(key);
+      },
+    },
+
+    cache: {
+      async get<T>(key: string): Promise<CacheEntry<T> | null> {
+        const entry = cache.get(key) as CacheEntry<T> | undefined;
+        if (!entry) return null;
+        if ((entry.staleUntilMs ?? entry.expiresAtMs) <= Date.now()) {
+          cache.delete(key);
+          return null;
+        }
+        return structuredClone(entry);
+      },
+      async set<T>(key: string, entry: CacheEntry<T>) {
+        cache.set(key, structuredClone(entry));
+      },
+      async delete(key) {
+        cache.delete(key);
+      },
+      async deleteByTags(tags) {
+        const requested = new Set(tags);
+        let deleted = 0;
+        for (const [key, entry] of cache.entries()) {
+          if (entry.tags.some((tag) => requested.has(tag))) {
+            cache.delete(key);
+            deleted += 1;
+          }
+        }
+        return deleted;
+      },
+    },
+
+    idempotency: {
+      async begin(record: IdempotencyRecord): Promise<IdempotencyBeginResult> {
+        const current = idempotency.get(record.key);
+        if (current && current.expiresAtMs > Date.now()) {
+          if (current.requestHash !== record.requestHash) return { status: "conflict" };
+          if (current.state === "completed") return { status: "completed", response: structuredClone(current.response) };
+          return { status: "inflight" };
+        }
+        idempotency.set(record.key, structuredClone(record));
+        return { status: "started" };
+      },
+      async complete(key, response, expiresAtMs) {
+        const current = idempotency.get(key);
+        if (!current) return;
+        idempotency.set(key, {
+          ...current,
+          state: "completed",
+          response: structuredClone(response),
+          expiresAtMs,
+        });
+      },
+      async fail(key) {
+        idempotency.delete(key);
+      },
+      async get(key) {
+        const current = idempotency.get(key);
+        if (!current || current.expiresAtMs <= Date.now()) {
+          idempotency.delete(key);
+          return null;
+        }
+        return structuredClone(current);
+      },
+    },
+
+    locks: {
+      async acquire(key, token, ttlMs, waitMs) {
+        const deadline = Date.now() + Math.max(0, waitMs);
+        do {
+          const now = Date.now();
+          const current = locks.get(key);
+          if (!current || current.expiresAtMs <= now) {
+            locks.set(key, { token, expiresAtMs: now + ttlMs });
+            return true;
+          }
+          if (waitMs <= 0) return false;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - now))));
+        } while (Date.now() <= deadline);
+        return false;
+      },
+      async release(key, token) {
+        const current = locks.get(key);
+        if (current?.token === token) locks.delete(key);
+      },
+    },
+
+    audit: {
+      async write(event) {
+        audit.push(structuredClone(event));
+      },
+      async list(filter) {
+        let rows = [...audit];
+        if (filter?.userId) rows = rows.filter((row) => row.actor.userId === filter.userId);
+        if (filter?.action) rows = rows.filter((row) => row.action === filter.action);
+        rows.reverse();
+        return rows.slice(0, filter?.limit ?? 100).map((row) => structuredClone(row));
+      },
+    },
+
+    outbox: {
+      async enqueue(record) {
+        outbox.push(structuredClone(record));
+      },
+      async next(limit) {
+        return outbox.filter((row) => !row.publishedAt).slice(0, limit).map((row) => structuredClone(row));
+      },
+      async markPublished(id, publishedAt) {
+        const row = outbox.find((item) => item.id === id);
+        if (row) row.publishedAt = publishedAt;
+      },
+      async markFailed(id, error) {
+        const row = outbox.find((item) => item.id === id);
+        if (row) {
+          row.attempts += 1;
+          row.lastError = error;
+        }
+      },
+    },
+
+    policies: {
+      async getMaintenance() {
+        return structuredClone(maintenance);
+      },
+      async setMaintenance(state) {
+        maintenance = structuredClone(state);
+      },
+      async getBlock(subjectType, subjectId, nowIso) {
+        const record = blocks.get(blockKey(subjectType, subjectId));
+        if (!record) return null;
+        if (record.expiresAt && record.expiresAt <= nowIso) {
+          blocks.delete(blockKey(subjectType, subjectId));
+          return null;
+        }
+        return structuredClone(record);
+      },
+      async putBlock(record) {
+        blocks.set(blockKey(record.subjectType, record.subjectId), structuredClone(record));
+      },
+      async removeBlock(subjectType, subjectId) {
+        blocks.delete(blockKey(subjectType, subjectId));
+      },
+      async getPolicyVersion() {
+        return policyVersion;
+      },
+      async bumpPolicyVersion() {
+        policyVersion += 1;
+        return policyVersion;
+      },
+    },
+
+    inspect() {
+      return {
+        sessions: [...sessions.values()].map((row) => structuredClone(row)),
+        audit: audit.map((row) => structuredClone(row)),
+        outbox: outbox.map((row) => structuredClone(row)),
+        blocks: [...blocks.values()].map((row) => structuredClone(row)),
+      };
+    },
+
+    clear() {
+      sessions.clear();
+      states.clear();
+      credentials.clear();
+      rateBuckets.clear();
+      cache.clear();
+      idempotency.clear();
+      locks.clear();
+      audit.length = 0;
+      outbox.length = 0;
+      blocks.clear();
+      policyVersion = 1;
+      maintenance = { enabled: false, allowOwners: true, updatedAt: new Date(0).toISOString() };
+    },
+  };
+
+  return bundle;
+}
