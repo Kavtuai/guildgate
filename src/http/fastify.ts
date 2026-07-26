@@ -1,6 +1,7 @@
 import type { DefinedAction } from "../action.js";
 import type { GuildGateKernel } from "../kernel.js";
-import type { HttpMethod, RequestEnvelope } from "../types.js";
+import type { RequestEnvelope } from "../types.js";
+import { parseHttpMethod } from "../security.js";
 
 export interface FastifyRequestLike {
   method: string;
@@ -11,7 +12,7 @@ export interface FastifyRequestLike {
   body?: unknown;
   params?: unknown;
   query?: unknown;
-  raw?: { signal?: AbortSignal };
+  raw?: unknown;
 }
 
 export interface FastifyReplyLike {
@@ -26,11 +27,12 @@ export function createFastifyHandler<I, O>(
   options?: {
     input?: (request: FastifyRequestLike) => unknown;
     locale?: (request: FastifyRequestLike) => string | undefined;
+    signal?: (request: FastifyRequestLike) => AbortSignal | undefined;
   },
 ): (request: FastifyRequestLike, reply: FastifyReplyLike) => Promise<unknown> {
   return async (request, reply) => {
     const envelope: RequestEnvelope = {
-      method: request.method.toUpperCase() as HttpMethod,
+      method: parseHttpMethod(request.method),
       path: request.url.split("?")[0] ?? request.url,
       input: options?.input?.(request) ?? request.body,
       headers: request.headers,
@@ -42,7 +44,7 @@ export function createFastifyHandler<I, O>(
       sessionToken: request.cookies?.[kernel.cookie.name],
       csrfToken: header(request.headers, "x-csrf-token"),
       idempotencyKey: header(request.headers, "idempotency-key"),
-      signal: request.raw?.signal,
+      signal: options?.signal?.(request) ?? rawSignal(request.raw),
     };
     const result = await kernel.execute(action, envelope);
     applyMeta(kernel, reply, result.meta);
@@ -84,4 +86,10 @@ function applyMeta(
 function header(headers: FastifyRequestLike["headers"], name: string): string | undefined {
   const value = headers[name] ?? headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
+}
+
+function rawSignal(raw: unknown): AbortSignal | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const signal = (raw as { signal?: unknown }).signal;
+  return signal instanceof AbortSignal ? signal : undefined;
 }

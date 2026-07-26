@@ -29,3 +29,31 @@ declare module "node:crypto" {
     setAuthTag(tag: Uint8Array): void;
   };
 }
+
+declare const process: {
+  versions: { node: string };
+  env: Record<string, string | undefined>;
+  uptime(): number;
+  memoryUsage(): { rss: number; heapUsed: number; heapTotal: number; external: number };
+  cpuUsage(previousValue?: { user: number; system: number }): { user: number; system: number };
+};
+
+declare module "node:async_hooks" {
+  export class AsyncLocalStorage<T> {
+    getStore(): T | undefined;
+    run<R>(store: T, callback: () => R): R;
+  }
+}
+
+declare module "node:perf_hooks" {
+  export function monitorEventLoopDelay(options?: { resolution?: number }): {
+    mean: number;
+    enable(): void;
+    disable(): void;
+    reset(): void;
+  };
+}
+
+declare module "node:os" {
+  export function loadavg(): number[];
+}

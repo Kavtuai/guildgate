@@ -1,11 +1,11 @@
 import type {
   CacheStore,
   IdempotencyStore,
-  LockStore,
   OAuthStateStore,
   RateLimitStore,
   SessionStore,
 } from "./stores.js";
+import type { LeaseLockStore } from "./locks.js";
 import type {
   CacheEntry,
   IdempotencyBeginResult,
@@ -33,7 +33,7 @@ export interface RedisEphemeralStores {
   rateLimits: RateLimitStore;
   cache: CacheStore;
   idempotency: IdempotencyStore;
-  locks: LockStore;
+  locks: LeaseLockStore;
 }
 
 export function fromNodeRedis(client: {
@@ -93,6 +93,7 @@ export function fromIoRedis(client: {
 
 export function createRedisEphemeralStores(redis: RedisCommandAdapter, input?: { prefix?: string }): RedisEphemeralStores {
   const prefix = input?.prefix ?? "guildgate";
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9:_-]{0,63}$/.test(prefix)) throw new TypeError("Redis prefix is invalid");
   const key = (kind: string, id: string) => `${prefix}:${kind}:${id}`;
 
   const sessions: SessionStore = {
@@ -215,15 +216,24 @@ export function createRedisEphemeralStores(redis: RedisCommandAdapter, input?: {
     },
   };
 
-  const locks: LockStore = {
+  const locks: LeaseLockStore = {
     async acquire(lockKey, token, ttlMs, waitMs) {
+      return Boolean(await this.acquireLease(lockKey, token, ttlMs, waitMs));
+    },
+    async acquireLease(lockKey, token, ttlMs, waitMs) {
       const deadline = Date.now() + Math.max(0, waitMs);
       do {
-        if (await redis.set(key("lock", lockKey), token, { px: ttlMs, nx: true })) return true;
-        if (waitMs <= 0) return false;
+        const result = await redis.eval(LEASE_ACQUIRE_SCRIPT, [key("lock", lockKey), key("lock-fence", lockKey)], [token, String(ttlMs)]);
+        if (Array.isArray(result) && Number(result[0]) === 1) {
+          return { key: lockKey, token, fencingToken: Number(result[1]), expiresAtMs: Date.now() + ttlMs };
+        }
+        if (waitMs <= 0) return null;
         await new Promise((resolve) => setTimeout(resolve, 25));
       } while (Date.now() <= deadline);
-      return false;
+      return null;
+    },
+    async renew(lockKey, token, ttlMs) {
+      return Number(await redis.eval(COMPARE_AND_RENEW_SCRIPT, [key("lock", lockKey)], [token, String(ttlMs)])) === 1;
     },
     async release(lockKey, token) {
       await redis.eval(COMPARE_AND_DELETE_SCRIPT, [key("lock", lockKey)], [token]);
@@ -254,6 +264,21 @@ end
 local ttl = redis.call('PTTL', KEYS[1])
 if ttl < 0 then redis.call('PEXPIRE', KEYS[1], window); ttl = window end
 return {allowed, count, ttl}
+`;
+
+const LEASE_ACQUIRE_SCRIPT = `
+if redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then
+  local fence = redis.call('INCR', KEYS[2])
+  return {1, fence}
+end
+return {0, 0}
+`;
+
+const COMPARE_AND_RENEW_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
 `;
 
 const COMPARE_AND_DELETE_SCRIPT = `

@@ -1,7 +1,7 @@
 {
   "name": "@kavtuai/guildgate",
-  "version": "0.1.1",
-  "description": "Security and control primitives for Discord bot dashboards.",
+  "version": "1.0.0",
+  "description": "Owner-controlled security, realtime, storage, operations and analytics infrastructure for Discord bot dashboards.",
   "type": "module",
   "license": "MIT",
   "author": "kavtuai",
@@ -14,14 +14,22 @@
   },
   "homepage": "https://github.com/Kavtuai/guildgate#readme",
   "keywords": [
-    "discord",
-    "dashboard",
-    "oauth2",
-    "security",
-    "rate-limit",
+    "analytics",
     "cache",
-    "websocket",
-    "typescript"
+    "dashboard",
+    "discord",
+    "distributed-lock",
+    "hono",
+    "monitoring",
+    "oauth2",
+    "opentelemetry",
+    "postgresql",
+    "rate-limit",
+    "security",
+    "sse",
+    "transactional-outbox",
+    "typescript",
+    "websocket"
   ],
   "engines": {
     "node": ">=22"
@@ -35,7 +43,14 @@
     "CHANGELOG.md",
     "TEST_REPORT.md",
     "LICENSE",
-    "SECURITY.md"
+    "SECURITY.md",
+    "MIGRATION.md",
+    "SECURITY_AUDIT.md",
+    "OPERATING_LIMITS.md",
+    "examples",
+    "ROADMAP.md",
+    "LOAD_TEST_REPORT.json",
+    "EXTERNAL_REVIEW_GUIDE.md"
   ],
   "exports": {
     ".": {
@@ -65,11 +80,48 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
+    },
+    "./analytics": {
+      "types": "./dist/analytics.d.ts",
+      "import": "./dist/analytics.js"
+    },
+    "./contracts": {
+      "types": "./dist/contracts.d.ts",
+      "import": "./dist/contracts.js"
+    },
+    "./discordjs": {
+      "types": "./dist/discordjs.d.ts",
+      "import": "./dist/discordjs.js"
+    },
+    "./hono": {
+      "types": "./dist/hono.d.ts",
+      "import": "./dist/hono.js"
+    },
+    "./operator": {
+      "types": "./dist/operator.d.ts",
+      "import": "./dist/operator.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres.d.ts",
+      "import": "./dist/postgres.js"
+    },
+    "./telemetry": {
+      "types": "./dist/telemetry.d.ts",
+      "import": "./dist/telemetry.js"
+    },
+    "./transactions": {
+      "types": "./dist/transactions.d.ts",
+      "import": "./dist/transactions.js"
+    },
+    "./locks": {
+      "types": "./dist/locks.d.ts",
+      "import": "./dist/locks.js"
     }
   },
   "bin": {
     "guildgate-doctor": "bin/guildgate-doctor.mjs",
-    "guildgate-writing-check": "bin/guildgate-writing-check.mjs"
+    "guildgate-writing-check": "bin/guildgate-writing-check.mjs",
+    "guildgate-migration": "bin/guildgate-migration.mjs"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -78,13 +130,18 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pack:check": "npm pack --dry-run",
     "prepublishOnly": "npm test && npm run pack:check",
-    "writing:check": "node ./bin/guildgate-writing-check.mjs"
+    "writing:check": "node ./bin/guildgate-writing-check.mjs",
+    "test:contracts": "node --test tests/contracts.test.mjs",
+    "test:load": "node scripts/load-test.mjs",
+    "migration:print": "node bin/guildgate-migration.mjs",
+    "release:verify": "npm run typecheck && npm test && npm run security:verify && npm run test:load && npm run pack:check",
+    "security:verify": "node scripts/security-verify.mjs"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
-    "typescript": "^5.8.3"
+    "@types/node": "22.19.15",
+    "typescript": "5.8.3"
   }
 }

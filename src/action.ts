@@ -1,5 +1,7 @@
 import type { CacheManager } from "./cache.js";
+import type { RetryOptions } from "./resilience.js";
 import type { GuildGateStores } from "./stores.js";
+import type { OptimisticRevisionPolicy, TransactionHooks, TransactionOptions, TransactionScope } from "./transactions.js";
 import type {
   RealtimeEvent,
   RequestEnvelope,
@@ -25,25 +27,40 @@ export interface ActionContext {
   stores: GuildGateStores;
   cache: CacheManager;
   now: Date;
+  attempt: number;
+  transaction?: TransactionScope;
+  fencingToken?: number;
 }
 
 export interface ActionRateLimit<I> {
   limit: number;
   windowMs: number;
   cost?: number;
-  key?: (context: Omit<ActionContext, "signal">, input: I) => string;
+  key?: (context: Omit<ActionContext, "signal" | "attempt">, input: I) => string;
 }
 
 export interface ActionIdempotency<I> {
   required?: boolean;
   ttlMs: number;
-  scope?: (context: Omit<ActionContext, "signal">, input: I) => string;
+  scope?: (context: Omit<ActionContext, "signal" | "attempt">, input: I) => string;
 }
 
 export interface ActionConcurrency<I> {
-  key: (context: Omit<ActionContext, "signal">, input: I) => string;
+  key: (context: Omit<ActionContext, "signal" | "attempt">, input: I) => string;
   ttlMs?: number;
   waitMs?: number;
+  renewEveryMs?: number;
+}
+
+export interface ActionTransaction<I, O> extends TransactionOptions {
+  required?: boolean;
+  hooks?: TransactionHooks<I, O>;
+}
+
+export interface ActionCircuitBreaker {
+  name?: string;
+  failureThreshold: number;
+  resetAfterMs: number;
 }
 
 export interface ActionDefinition<I, O> {
@@ -56,7 +73,11 @@ export interface ActionDefinition<I, O> {
   rateLimit?: ActionRateLimit<I>;
   idempotency?: ActionIdempotency<I>;
   concurrency?: ActionConcurrency<I>;
-  authorize?: (context: Omit<ActionContext, "signal">, input: I) => Promise<AuthorizationDecision | void> | AuthorizationDecision | void;
+  optimistic?: OptimisticRevisionPolicy<I>;
+  transaction?: ActionTransaction<I, O>;
+  retry?: RetryOptions;
+  circuitBreaker?: ActionCircuitBreaker;
+  authorize?: (context: Omit<ActionContext, "signal" | "attempt">, input: I) => Promise<AuthorizationDecision | void> | AuthorizationDecision | void;
   execute: (context: ActionContext, input: I) => Promise<O>;
   audit?: {
     enabled?: boolean;

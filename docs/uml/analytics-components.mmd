@@ -1,0 +1,11 @@
+flowchart LR
+    Process[Node.js process metrics] --> Monitor[StatusMonitor]
+    Discord[Discord client collector] --> Monitor
+    Probe[Database / Redis / API probes] --> Monitor
+    Monitor --> Store[AnalyticsStore]
+    Store --> Query[bucketMetrics / summarizeMetric]
+    Query --> Line[Line SVG]
+    Query --> Bar[Bar SVG]
+    Query --> Donut[Donut SVG]
+    Query --> Table[Table model]
+    Store --> Operator[Owner metrics action]

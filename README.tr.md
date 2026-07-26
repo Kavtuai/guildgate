@@ -1,160 +1,177 @@
 # GuildGate
 
-[English documentation](./README.md)
+GuildGate, Discord bot panellerinin sunucu tarafı için hazırlanmış bir TypeScript kütüphanesidir. Oturum, güvenli yazma işlemi, politika denetimi, realtime teslimat, veri tabanı bağlantısı, yönetici araçları, izleme ve analitik parçalarını uygulama sahibinin yönettiği sözleşmeler altında toplar.
 
-GuildGate, Discord bot panellerinin sunucu tarafı için hazırlanmış bir TypeScript kütüphanesidir. Oturum kayıtlarını, Discord OAuth state doğrulamasını, CSRF ve origin kontrollerini, sunucu izinlerini, istek sınırlarını, idempotency kayıtlarını, kaynak kilitlerini, zaman aşımını, cache temizliğini, denetim kayıtlarını, outbox olaylarını ve yetkili gerçek zamanlı abonelikleri yönetir.
+Kütüphane panel arayüzü üretmez ve uygulama verisinin sahibi olmaz. Veri tabanını, HTTP çatısını, Discord istemcisini, telemetri sistemini ve grafiklerin nerede gösterileceğini siz seçersiniz.
 
-Arayüz üretmez ve veritabanınızı seçmez. Her depolama bölümü bir TypeScript arayüzüdür. PostgreSQL, MySQL, MongoDB, SQLite, Redis, mevcut ORM yapınız veya özel bir veri servisi kullanılabilir.
+Güncel paket: `@kavtuai/guildgate@1.0.0`
+Gerekli çalışma ortamı: Node.js 22 veya daha yeni
 
-Paket: `@kavtuai/guildgate`  
-Sürüm: `0.1.0`  
-Çalışma ortamı: Node.js 22 veya üzeri
-
-## Durum
-
-Bu depo ilk açık kaynak sürüm adayıdır. TypeScript derlemesi ve paketteki testler geçmektedir. Discord OAuth, üretim Redis sunucusu ve üçüncü taraf veritabanı sürücüleri, yayına alınacak uygulamada ayrıca entegrasyon testinden geçirilmelidir.
-
-Hiçbir kütüphane, uygulamanın güvenlik hatası içermediğini garanti edemez. GuildGate tekrar edilen güvenlik işlerini azaltır, üretimde tehlikeli ayarları reddeder ve politika yönetimini uygulama sahibine bırakır. Üretim ortamında kod incelemesi, bağımlılık kontrolü, izleme, yedekleme ve risk seviyesine göre dış güvenlik incelemesi yine gereklidir.
+`1.0.0`, ilk kararlı sözleşme sürümüdür. Bakımcı güvenlik incelemesi [SECURITY_AUDIT.md](SECURITY_AUDIT.md) içinde yayımlanır. Proje bağımsız üçüncü taraf denetiminden geçmiş gibi sunulmaz; bu kaydı isteyen ekipler [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md) belgesini inceleme kapsamı olarak kullanabilir.
 
 ## Kurulum
-
-Paket npm üzerinde yayımlandıktan sonra:
 
 ```bash
 npm install @kavtuai/guildgate
 ```
 
-Bu kaynak paketini yayımlamadan önce denemek için:
+İsteğe bağlı bağlantılar uygulama tarafında kurulur:
 
 ```bash
-npm install
-npm test
+npm install pg hono discord.js ws @opentelemetry/api
 ```
+
+GuildGate bu paketleri doğrudan içe aktarmaz. Adapter'lar küçük uyumlu arayüzler kabul eder. Böylece çekirdek paket hafif kalır ve uygulama kendi sürümlerini sabitleyebilir.
 
 ## Pakette bulunanlar
 
-- Sunucu tarafında tutulan, içeriği anlamsız oturum kimlikleri.
-- Oturum süresi, boşta kalma süresi, kimlik yenileme, kullanıcı başına oturum sınırı ve iptal.
-- Tek kullanımlık `state` kaydı ve tarayıcı nonce çerezi kullanan Discord authorization-code girişi.
-- Uygulamanın verdiği anahtar takımıyla şifrelenen OAuth access ve refresh token kayıtları.
-- Yazma isteklerinde tam origin kontrolü ve oturuma bağlı CSRF tokenı.
-- Discord izinleri için `BigInt` işlemleri.
-- Kullanıcı ve botun sunucu izinlerini ayrı ayrı kontrol etme.
-- Panel okuma ve yazma işlemleri için denetimli `action()` API’si.
-- İşlem bazlı limit, idempotency, kaynak kilidi, zaman aşımı, denetim kaydı, cache etiketi ve gerçek zamanlı olay desteği.
-- Test ve yerel geliştirme için bellek sürücüleri.
-- Kısa ömürlü ve dağıtık veriler için Redis sürücüleri.
-- Runtime bağımlılığı eklemeyen Fastify ve Express bağlayıcıları.
-- WebSocket bağlayıcıları için oturum kontrollü gerçek zamanlı merkez.
-- Birbirine karışmayan, uygulama tarafından değiştirilebilen Türkçe ve İngilizce hata metinleri.
-- Mermaid UML dosyaları, tehdit modeli, veri sürücüsü sözleşmeleri ve yayın iş akışları.
+### Güvenli yazma işlemleri
 
-## Beş dakikalık yerel örnek
+- sunucu taraflı oturum ve oturum yenileme
+- exact-origin ve CSRF denetimi
+- idempotency tekrar oynatma ve farklı gövde çakışması
+- optimistic revision denetimi
+- transaction adapter'ı ile commit/rollback hook'ları
+- etiket tabanlı cache temizleme
+- yenilenen dağıtık lease ve fencing token
+- timeout, retry ve circuit breaker
+- audit kaydı ve bot sahibi politikaları
 
-Bellek sürücüsü test ve tek süreçli yerel geliştirme içindir. Üretim veritabanı değildir.
+### Realtime
+
+- yetkili kanal aboneliği
+- WebSocket, Socket.IO ve Server-Sent Events bağlantıları
+- heartbeat ve periyodik oturum doğrulama
+- yerel veya broadcast oturum iptalinde bağlantı kesme
+- buffered byte ve event kuyruğu sınırı
+- kanal sequence değeri ve resume cursor
+- çoklu worker için claim kullanan outbox
+
+### Ekosistem
+
+- Fastify, Express ve Hono action handler'ları
+- PostgreSQL store paketi ve migration SQL'i
+- paylaşımlı oturum, limit, cache, idempotency ve lock için Redis store'ları
+- discord.js uyumlu sunucu yetki adapter'ı
+- altyapıdan bağımsız OpenTelemetry hook'ları
+- memory test harness ve store sözleşme testleri
+- doctor, writing-check ve migration CLI komutları
+
+### Yönetim ve analitik
+
+- yalnızca bot sahibinin kullanabildiği bakım ve erişim engeli kontrolleri
+- sayfalı oturum, audit ve politika servisleri
+- rate policy kayıt defteri ve güvenli sıfırlama
+- sunucu process ve Discord bot ölçümleri
+- uygulamaya özel health probe'ları
+- zaman serisi saklama ve bucket özetleri
+- line, bar ve donut SVG grafikleri
+- panel tabloları için sütun/satır modeli
+
+## En küçük kurulum
 
 ```ts
 import {
   createGuildGate,
   createMemoryStoreBundle,
+  createMemoryTransactionAdapter,
 } from "@kavtuai/guildgate";
 
 const stores = createMemoryStoreBundle();
 
 const gate = createGuildGate({
   app: {
-    name: "Discord Bot Panelim",
+    name: "Discord Panelim",
     environment: "development",
     baseUrl: "http://localhost:3000",
   },
-  owners: [process.env.BOT_OWNER_ID!],
-  locale: {
-    default: "tr",
-    messages: {
-      tr: { MAINTENANCE_MODE: "Bakım sırasında ayar değiştirilemez." },
-    },
-  },
+  owners: ["DISCORD_KULLANICI_ID"],
   security: {
     allowedOrigins: ["http://localhost:3000"],
     csrfSecret: process.env.GUILDGATE_CSRF_SECRET!,
     auditIpSalt: process.env.GUILDGATE_AUDIT_IP_SALT!,
     session: {
-      ttlMs: 12 * 60 * 60_000,
+      ttlMs: 7 * 24 * 60 * 60_000,
       idleTimeoutMs: 30 * 60_000,
       rotateAfterMs: 15 * 60_000,
       maximumSessionsPerUser: 5,
     },
   },
   stores,
+  transactions: createMemoryTransactionAdapter(),
 });
 ```
 
-Gizli değerleri kaynak koduna yazmayın. Rastgele değer üretmek için:
+Memory adapter test ve yerel araçlar içindir. Process kapandığında veriler silinir.
 
-```bash
-node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
-```
-
-## Denetimli panel işlemi
-
-İşlemi koruyan kurallar aynı tanımda yer alır.
+## Korumalı bir ayar kaydı
 
 ```ts
-const ayarlariGuncelle = gate.action({
+let currentRevision = 4;
+
+const updateSettings = gate.action({
   name: "guild.settings.update",
 
   parse(value) {
-    const body = value as Record<string, unknown>;
-    if (typeof body.guildId !== "string") throw new Error("guildId gerekli");
-    if (typeof body.revision !== "number") throw new Error("revision gerekli");
-    return {
-      guildId: body.guildId,
-      revision: body.revision,
-      settings: body.settings,
+    const input = value as {
+      guildId: string;
+      expectedRevision: number;
+      prefix: string;
     };
+
+    if (!input.guildId || !Number.isInteger(input.expectedRevision)) {
+      throw new Error("Ayar girdisi geçersiz");
+    }
+
+    return input;
   },
 
   resource: (input) => ({ type: "guild", id: input.guildId }),
+  rateLimit: { limit: 20, windowMs: 60_000 },
+  idempotency: { ttlMs: 10 * 60_000 },
 
-  rateLimit: {
-    limit: 20,
-    windowMs: 60_000,
-    key: (context, input) => `${context.userId}:${input.guildId}`,
-  },
-
-  idempotency: {
-    ttlMs: 10 * 60_000,
-    scope: (context, input) => `${context.userId}:${input.guildId}`,
+  optimistic: {
+    expected: (input) => input.expectedRevision,
+    current: async () => currentRevision,
+    resource: (input) => `guild:${input.guildId}`,
   },
 
   concurrency: {
-    key: (_context, input) => `guild-settings:${input.guildId}`,
+    key: (_context, input) => `settings:${input.guildId}`,
     ttlMs: 8_000,
-    waitMs: 500,
+    renewEveryMs: 2_000,
+    waitMs: 250,
+  },
+
+  retry: {
+    attempts: 3,
+    baseDelayMs: 50,
+    maximumDelayMs: 500,
+  },
+
+  circuitBreaker: {
+    failureThreshold: 5,
+    resetAfterMs: 30_000,
+  },
+
+  transaction: {
+    isolation: "serializable",
   },
 
   timeoutMs: 5_000,
 
-  authorize: async (context) => {
-    return context.userId
-      ? { allowed: true }
-      : { allowed: false, code: "AUTHENTICATION_REQUIRED" };
-  },
-
   async execute(context, input) {
-    // Transaction ve revision kontrolü uygulamanın veritabanı katmanındadır.
-    return database.transaction(async (tx) => {
-      return tx.guildSettings.updateWithRevision({
-        guildId: input.guildId,
-        expectedRevision: input.revision,
-        settings: input.settings,
-        actorId: context.userId!,
-      });
-    });
-  },
+    context.signal.throwIfAborted();
+    context.transaction;
+    context.fencingToken;
 
-  audit: {
-    changes: (result) => ({ revision: result.revision }),
+    currentRevision += 1;
+
+    return {
+      guildId: input.guildId,
+      prefix: input.prefix,
+      revision: currentRevision,
+    };
   },
 
   cache: {
@@ -166,232 +183,217 @@ const ayarlariGuncelle = gate.action({
     events: (result) => [{
       event: "guild.settings.updated",
       channel: `guild:${result.guildId}`,
-      data: { revision: result.revision },
+      data: result,
     }],
   },
-});
-```
 
-Tarayıcıdan gelen yazma isteğinde oturum çerezi, CSRF tokenı ve idempotency anahtarı bulunmalıdır:
-
-```http
-PATCH /api/guilds/123/settings
-Origin: https://panel.example.com
-X-CSRF-Token: <oturuma-bagli-token>
-Idempotency-Key: <rastgele-istek-kimligi>
-```
-
-## Discord girişi
-
-```ts
-import { createTokenCipher } from "@kavtuai/guildgate";
-import { createDiscordOAuth } from "@kavtuai/guildgate/discord";
-
-const cipher = createTokenCipher({
-  activeKeyId: "2026-01",
-  keys: {
-    "2026-01": process.env.GUILDGATE_TOKEN_KEY_BASE64!,
-  },
-});
-
-const discord = createDiscordOAuth({
-  kernel: gate,
-  cipher,
-  config: {
-    clientId: process.env.DISCORD_CLIENT_ID!,
-    clientSecret: process.env.DISCORD_CLIENT_SECRET!,
-    redirectUri: "https://panel.example.com/auth/discord/callback",
-    scopes: ["identify", "guilds"],
+  audit: {
+    changes: (result) => result,
   },
 });
 ```
 
-Girişi başlatma:
+Güvensiz HTTP metotları, action açıkça kapatmadığı sürece izinli origin ve oturuma bağlı CSRF token ister.
 
-```ts
-const login = await discord.beginLogin({ returnTo: "/dashboard", locale: "tr" });
-response.header("set-cookie", login.stateCookie);
-response.redirect(login.authorizationUrl);
-```
-
-Callback:
-
-```ts
-const result = await discord.completeLogin({
-  code: request.query.code,
-  state: request.query.state,
-  stateCookie: request.cookies["__Host-guildgate.oauth"],
-});
-
-response.header("set-cookie", [result.setCookie, result.clearStateCookie]);
-response.redirect(result.returnTo);
-```
-
-Callback yalnızca site içindeki bir path’e yönlendirir. İstekten gelen harici alan adına yönlendirme yapmaz.
-
-## Sunucu izinleri
-
-```ts
-import { createDiscordGuildAuthorizer } from "@kavtuai/guildgate/discord";
-
-const guildAccess = createDiscordGuildAuthorizer({
-  oauth: discord,
-  botToken: process.env.DISCORD_BOT_TOKEN!,
-  botUserId: process.env.DISCORD_BOT_USER_ID!,
-  cache: gate.cache,
-});
-
-const kaydet = gate.action({
-  name: "guild.settings.save",
-  parse: ayarlariDogrula,
-  resource: (input) => ({ type: "guild", id: input.guildId }),
-  authorize: guildAccess.require({
-    guildId: (input) => input.guildId,
-    userPermissions: ["MANAGE_GUILD"],
-    botPermissions: ["VIEW_CHANNEL", "MANAGE_ROLES"],
-    consistency: "live",
-  }),
-  execute: ayarlariKaydet,
-});
-```
-
-Discord’a veya güvenlik ayarlarına yazan işlemlerde canlı kontrol kullanın. Düşük riskli görüntüleme verilerinde kısa süreli cache kullanılabilir. Üye rolleri, sunucu rolleri veya bot üyeliği değiştiğinde izin cache’i temizlenmelidir.
-
-## Veritabanı seçimi
-
-Tam sözleşme `GuildGateStores` arayüzüdür:
-
-```ts
-interface GuildGateStores {
-  sessions: SessionStore;
-  oauthStates: OAuthStateStore;
-  credentials: OAuthCredentialStore;
-  rateLimits: RateLimitStore;
-  cache: CacheStore;
-  idempotency: IdempotencyStore;
-  locks: LockStore;
-  audit: AuditStore;
-  outbox: OutboxStore;
-  policies: PolicyStore;
-}
-```
-
-Kalıcı kayıtlar ana veritabanında, kısa ömürlü kayıtlar Redis’te tutulabilir:
-
-```ts
-import { composeStores, createMemoryStoreBundle } from "@kavtuai/guildgate";
-import {
-  createRedisEphemeralStores,
-  fromNodeRedis,
-} from "@kavtuai/guildgate/redis";
-
-const temporary = createRedisEphemeralStores(fromNodeRedis(redis), {
-  prefix: "mybot:guildgate",
-});
-
-const stores = composeStores(createMemoryStoreBundle(), {
-  ...temporary,
-  credentials: postgresCredentialStore,
-  audit: postgresAuditStore,
-  outbox: postgresOutboxStore,
-  policies: postgresPolicyStore,
-});
-```
-
-Bu örnekteki bellek tabanı yalnızca birleştirme mantığını göstermek içindir. Üretim uygulaması, yeniden başlatma sonrasında korunması gereken her kayıt için kalıcı bir sürücü vermelidir.
-
-Ayrıntılar: [Özel veri sürücüleri](./docs/tr/veritabani-suruculeri.md).
-
-## Fastify ve Express
-
-Bağlayıcılar framework tiplerini yapısal olarak kullanır. GuildGate, Fastify veya Express’i bağımlılık olarak kurmaz.
+## HTTP adapter'ları
 
 ```ts
 import { fastifyActionHandler } from "@kavtuai/guildgate/fastify";
 
-fastify.patch(
+app.patch(
   "/api/guilds/:guildId/settings",
-  fastifyActionHandler(gate, ayarlariGuncelle),
+  fastifyActionHandler(gate, updateSettings, {
+    input: (request) => ({
+      ...(request.body as object),
+      guildId: (request.params as { guildId: string }).guildId,
+    }),
+  }),
 );
 ```
+
+Diğer girişler:
 
 ```ts
 import { expressActionHandler } from "@kavtuai/guildgate/express";
-
-app.patch(
-  "/api/guilds/:guildId/settings",
-  expressActionHandler(gate, ayarlariGuncelle),
-);
+import { honoActionHandler } from "@kavtuai/guildgate/hono";
 ```
 
-## Gerçek zamanlı bağlantılar
-
-`createRealtimeHub()` kendi başına socket sunucusu açmaz. `RealtimeConnection` arayüzü üzerinden `ws`, uWebSockets.js, Socket.IO, Bun veya başka bir taşıyıcıya bağlanır.
-
-Bağlantı tam origin kontrolünden ve oturum doğrulamasından geçer. Her kanal aboneliği ayrı bir yetkilendirme fonksiyonuna sahiptir. Mesaj boyutu, mesaj sayısı, boşta kalma süresi, toplam bağlantı ömrü, abonelik sayısı ve yavaş istemci sınırları da uygulanır.
-
-Ayrıntılar: [Mimari](./docs/tr/mimari.md) ve [gerçek zamanlı UML sırası](./docs/uml/realtime-sequence.mmd).
-
-## Sahip yönetimi
-
-Yapılandırılan sahip kimlikleriyle korunmuş yönetim endpoint’leri hazırlanabilir. Çekirdekte şu işlemler bulunur:
+## PostgreSQL
 
 ```ts
-await gate.owner.setMaintenance({ enabled: true, reason: "veritabanı bakımı" });
-await gate.owner.block({ subjectType: "user", subjectId: "123", reason: "kötüye kullanım" });
-await gate.owner.unblock("user", "123");
-await gate.revokeUserSessions("123");
+import { Pool } from "pg";
+import { createPostgresAdapter } from "@kavtuai/guildgate/postgres";
+
+const postgres = createPostgresAdapter({
+  pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+});
+
+await postgres.migrate();
+
+const gate = createGuildGate({
+  // app ve security ayarları
+  stores: postgres.stores,
+  transactions: postgres.transactions,
+});
 ```
 
-Sahip endpoint’leri de oturum, CSRF, origin, rate limit ve denetim kontrollerinden geçmelidir. Bu metotları sahip yetkisi kontrol edilmemiş açık endpoint’lerden çağırmayın.
+PostgreSQL paketi oturum, OAuth state, credential, rate limit, cache, idempotency, lease, audit, policy, outbox, realtime sequence ve analitik kayıtlarını kapsar.
 
-## Üretim kuralları
+Migration SQL'ini bağlantı açmadan görüntülemek için:
 
-GuildGate üretimde şu ayarları kabul etmez:
+```bash
+npx guildgate-migration --prefix guildgate
+```
 
-- HTTPS kullanmayan uygulama adresi.
-- Boş origin izin listesi.
-- HTTP veya localhost origin değeri.
-- `Secure` özelliği kapalı oturum çerezi.
-- HTTPS kullanmayan Discord callback adresi.
-- Kısa CSRF ve IP hashleme sırları.
+Başka veri tabanları `GuildGateStores` sözleşmesini uygulayabilir. Davranışı `runStoreContract()` ile kontrol edebilirsiniz.
 
-Uygulamanın sorumlulukları:
+## Realtime
 
-- Reverse proxy güven ayarını doğru kurmak ve gerçek istemci IP’sini güvenli biçimde almak.
-- Bot tokenını, OAuth sırlarını, şifreleme anahtarlarını ve veritabanı bilgilerini kaynak koddan uzak tutmak.
-- Sürücü destekliyorsa veritabanı değişikliklerini transaction içinde yapmak.
-- Aynı kaydı birden fazla yönetici düzenleyebiliyorsa revision kontrolü kullanmak.
-- Denetim ve outbox kayıtları için saklama süresi belirlemek.
-- Kalıcı verileri yedeklemek ve geri yükleme işlemini test etmek.
-- Destekleyen HTTP ve veritabanı istemcilerine iptal sinyali geçirmek.
-- Büyük sürümlerden önce Discord izinlerini ve API değişikliklerini kontrol etmek.
+```ts
+import {
+  attachWebSocket,
+  createRealtimeHub,
+  MemoryRealtimeEventLog,
+} from "@kavtuai/guildgate/realtime";
 
-## Depo kontrolleri
+const eventLog = new MemoryRealtimeEventLog();
+
+const hub = createRealtimeHub({
+  sessions: gate.sessions,
+  rateLimits: gate.config.stores.rateLimits,
+  allowedOrigins: gate.config.security.allowedOrigins,
+});
+
+await attachWebSocket({
+  socket,
+  hub,
+  origin: request.headers.origin,
+  sessionToken,
+  eventLog,
+  authorize: async ({ userId, channel }) => {
+    return canUserOpenChannel(userId, channel);
+  },
+});
+```
+
+Aynı modülde `attachSocketIo()`, `createServerSentEventStream()`, `MemorySessionRevocationBus`, `createSequencedPublisher()` ve `createOutboxWorker()` bulunur.
+
+## Bot ve sunucu izleme
+
+```ts
+import {
+  MemoryAnalyticsStore,
+  StatusMonitor,
+  createDiscordJsBotCollector,
+} from "@kavtuai/guildgate/analytics";
+
+const analytics = new MemoryAnalyticsStore();
+
+const monitor = new StatusMonitor({
+  store: analytics,
+  intervalMs: 30_000,
+  bot: createDiscordJsBotCollector(discordClient),
+  probes: [
+    {
+      id: "database",
+      label: "PostgreSQL",
+      timeoutMs: 2_000,
+      async check(signal) {
+        await pingDatabase(signal);
+        return { status: "operational" };
+      },
+    },
+  ],
+});
+
+monitor.start();
+```
+
+Ölçümler process belleği, CPU süresi, event-loop gecikmesi, uptime, bot hazır olma durumu, gateway gecikmesi, sunucu sayısı, tahmini kullanıcı erişimi, shard ve komut sayısını içerir. Uygulama kendi `MetricPoint` kayıtlarını da ekleyebilir.
+
+## Grafik ve tablo üretimi
+
+```ts
+import {
+  bucketMetrics,
+  renderLineChartSvg,
+} from "@kavtuai/guildgate/analytics";
+
+const points = await analytics.query({
+  names: ["bot.websocket.ping_ms"],
+  from: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+});
+
+const buckets = bucketMetrics(points, 5 * 60_000);
+
+const svg = renderLineChartSvg({
+  title: "Gateway gecikmesi",
+  labels: buckets.map((bucket) => bucket.start),
+  series: [{
+    name: "p95",
+    values: buckets.map((bucket) => bucket.p95),
+  }],
+});
+```
+
+`renderBarChartSvg()` ve `renderDonutChartSvg()` bağımsız SVG metni döndürür. `buildAnalyticsTable()` React, Vue, Svelte, düz HTML veya JSON API içinde gösterilebilecek tablo modeli üretir.
+
+## Oturum ve bot sahibi API'leri
+
+```ts
+import { createOperatorActions } from "@kavtuai/guildgate/operator";
+
+const operator = createOperatorActions({
+  kernel: gate,
+  analytics,
+});
+```
+
+Hazır action'lar oturum listeleme, oturum iptali, audit sorgusu, policy inceleme, metrik sorgusu, bakım modu ve subject block işlemlerini kapsar. Bot sahibi yetkisi `createGuildGate()` içindeki `owners` listesinden gelir.
+
+## OpenTelemetry
+
+```ts
+import * as otel from "@opentelemetry/api";
+import { createOpenTelemetryHooks } from "@kavtuai/guildgate/telemetry";
+
+const telemetry = createOpenTelemetryHooks(otel, {
+  name: "panelim",
+  version: "2.4.0",
+});
+```
+
+Bu değeri `createGuildGate()` yapılandırmasına verin. Adapter action span, sayaç ve süre histogramı üretir; SDK veya exporter seçimini uygulamaya bırakır.
+
+## Kontrol komutları
 
 ```bash
 npm run typecheck
 npm test
 npm run pack:check
-node ./bin/guildgate-doctor.mjs
+npm run test:load
+npx guildgate-doctor --help
+npx guildgate-writing-check --help
+npx guildgate-migration --help
 ```
 
-Doctor komutu ortam değişkenlerini yerelde kontrol eder. Gizli değerleri başka bir servise göndermez.
+## Sürüm durumu
 
-## Belgeler
+`1.0.0` kararlı yayıma hazırdır. Sözleşmeler, migration politikası, tehdit modeli, güvenlik bildirim süreci, bakımcı güvenlik incelemesi, regresyon testleri, paket kontrolleri ve yerel yük testi bu kaynak ağacında bulunur. Redis, PostgreSQL, Discord, reverse proxy ve uygulamaya özel yetkilendirme testleri hedef ortamda ayrıca yapılmalıdır.
 
-- [Kurulum ve ilk yayın](./docs/tr/kurulum.md)
-- [Mimari](./docs/tr/mimari.md)
-- [Özel veri sürücüleri](./docs/tr/veritabani-suruculeri.md)
-- [Sahip yönetimi](./docs/tr/sahip-yonetimi.md)
-- [Tehdit modeli](./docs/tr/tehdit-modeli.md)
-- [Yazım kuralları](./docs/tr/yazim-kilavuzu.md)
-- [Araştırma notları](./docs/tr/arastirma-notlari.md)
-- [Yerel test raporu](./TEST_REPORT.md)
-- [Sürüm planı](./ROADMAP.md)
-- [Güvenlik bildirimi](./SECURITY.md)
-- [UML dosyaları](./docs/uml)
+Diğer belgeler:
+
+- [ROADMAP.md](ROADMAP.md)
+- [MIGRATION.md](MIGRATION.md)
+- [OPERATING_LIMITS.md](OPERATING_LIMITS.md)
+- [SECURITY.md](SECURITY.md)
+- [SECURITY_AUDIT.md](SECURITY_AUDIT.md)
+- [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md)
+- [docs/tr/tehdit-modeli.md](docs/tr/tehdit-modeli.md)
+- [docs/contracts/stable-adapters.md](docs/contracts/stable-adapters.md)
+- [docs/tr/yapilandirma.md](docs/tr/yapilandirma.md)
+- [docs/tr/analitik.md](docs/tr/analitik.md)
 
 ## Lisans
 
-MIT. Bkz. [LICENSE](./LICENSE).
+MIT

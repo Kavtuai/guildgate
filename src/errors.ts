@@ -66,6 +66,12 @@ export const errors = {
     new GuildGateError({ code: "REVISION_CONFLICT", status: 409, details }),
   lockUnavailable: () =>
     new GuildGateError({ code: "RESOURCE_BUSY", status: 409, retryable: true }),
+  lockLost: (details?: Record<string, unknown>) =>
+    new GuildGateError({ code: "LOCK_OWNERSHIP_LOST", status: 409, retryable: true, details }),
+  ownerRequired: () =>
+    new GuildGateError({ code: "OWNER_REQUIRED", status: 403 }),
+  ratePolicyResetDenied: (policy: string) =>
+    new GuildGateError({ code: "RATE_POLICY_RESET_DENIED", status: 403, details: { policy } }),
   timeout: () => new GuildGateError({ code: "UPSTREAM_TIMEOUT", status: 504, retryable: true }),
   upstreamUnavailable: (details?: Record<string, unknown>) =>
     new GuildGateError({ code: "UPSTREAM_UNAVAILABLE", status: 503, retryable: true, details }),

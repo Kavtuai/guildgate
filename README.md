@@ -1,62 +1,80 @@
 # GuildGate
 
-[Turkish documentation](./README.tr.md)
+GuildGate is a TypeScript library for the server side of Discord bot dashboards. It keeps authentication, write safety, policy checks, realtime delivery, storage adapters, operator tools, monitoring and analytics behind contracts controlled by the application owner.
 
-GuildGate is a TypeScript library for the server side of Discord bot dashboards. It handles session records, Discord OAuth state, CSRF checks, exact-origin checks, guild permission checks, request limits, idempotency, resource locks, timeouts, cache invalidation, audit records, outbox events, and authenticated realtime subscriptions.
+The package does not generate a dashboard UI and does not take ownership of application data. You choose the database, HTTP framework, Discord client, telemetry backend and chart placement.
 
-It does not generate a user interface and it does not own your database. Each storage feature is an interface. An application can use PostgreSQL, MySQL, MongoDB, SQLite, Redis, an existing ORM, or a private storage service.
-
-Current package: `@kavtuai/guildgate`  
-Current release: `0.1.0`  
+Current package: `@kavtuai/guildgate@1.0.0`
 Required runtime: Node.js 22 or newer
 
-## Status
-
-This repository is an initial public release candidate. The TypeScript build and included tests pass. Live Discord OAuth, a production Redis server, and third-party database drivers still need integration tests in the target application before deployment.
-
-No library can promise that an application has no security defects. GuildGate reduces repeated security work, rejects unsafe production settings, and gives application owners explicit policy controls. A production service should still use code review, dependency review, monitoring, backups, and an external security review when its risk warrants one.
+Version `1.0.0` is the first stable contract line. The maintainer security audit is published in [SECURITY_AUDIT.md](SECURITY_AUDIT.md). GuildGate does not claim an independent third-party audit; teams that need one can use [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md) as the review handoff.
 
 ## Install
-
-After the package is published:
 
 ```bash
 npm install @kavtuai/guildgate
 ```
 
-To test this source archive before publishing:
+Optional integrations stay in the application:
 
 ```bash
-npm install
-npm test
+npm install pg hono discord.js ws @opentelemetry/api
 ```
 
-## What is included
+GuildGate does not import those packages. The adapters accept small compatible interfaces, which keeps the core package light and lets the application pin its own versions.
 
-- Opaque server-side sessions. Raw session tokens are not stored.
-- Session expiry, idle expiry, rotation, per-user session caps, and revocation.
-- Discord authorization-code login with one-time `state` records and a browser nonce cookie.
-- Encrypted OAuth access and refresh token storage through a caller-supplied keyring.
-- Exact origin checks and session-bound CSRF tokens for write requests.
-- Discord permission parsing with `BigInt`.
-- User and bot permission checks for a guild.
-- A guarded `action()` API for dashboard reads and writes.
-- Per-action limits, idempotency keys, resource locks, request deadlines, audit records, cache tags, and realtime events.
-- Memory stores for tests and local development.
-- Redis implementations for short-lived and distributed state.
-- Framework adapters for Fastify and Express without runtime framework dependencies.
-- An authenticated realtime hub for WebSocket adapters.
-- English and Turkish error messages with per-application overrides.
-- Mermaid UML files, a threat model, store contracts, release notes, and publishing workflows.
+## Included
 
-## Five-minute local example
+### Safe writes
 
-Memory storage is suitable for tests and a single local process. It is not a production database.
+- server-side sessions and session rotation
+- exact-origin and CSRF checks
+- idempotency replay and payload conflict detection
+- optimistic revision checks
+- transaction adapters and commit/rollback hooks
+- tag-based cache invalidation
+- distributed leases, renewal and fencing tokens
+- deadlines, retries and circuit breakers
+- audit records and owner policies
+
+### Realtime
+
+- authorized channel subscriptions
+- WebSocket, Socket.IO and Server-Sent Events bindings
+- heartbeat and session revalidation
+- immediate disconnect after local or broadcast revocation
+- buffered-byte and event-queue limits
+- channel sequences and resume cursors
+- claim-based outbox workers for multiple instances
+
+### Ecosystem
+
+- Fastify, Express and Hono action handlers
+- PostgreSQL store bundle and migration SQL
+- Redis stores for shared sessions, limits, cache, idempotency and locks
+- discord.js-compatible guild permission adapter
+- backend-neutral OpenTelemetry hooks
+- memory test harness and stable store contract tests
+- doctor, writing-check and migration CLI commands
+
+### Operations and analytics
+
+- owner-only maintenance and subject block controls
+- paged session, audit and policy services
+- rate policy registry and reset controls
+- server process and Discord bot sampling
+- custom health probes
+- time-series storage and bucket summaries
+- line, bar and donut SVG renderers
+- table models for dashboard views
+
+## Minimal setup
 
 ```ts
 import {
   createGuildGate,
   createMemoryStoreBundle,
+  createMemoryTransactionAdapter,
 } from "@kavtuai/guildgate";
 
 const stores = createMemoryStoreBundle();
@@ -67,51 +85,45 @@ const gate = createGuildGate({
     environment: "development",
     baseUrl: "http://localhost:3000",
   },
-  owners: [process.env.BOT_OWNER_ID!],
-  locale: {
-    default: "en",
-    messages: {
-      en: { MAINTENANCE_MODE: "Settings are paused during maintenance." },
-    },
-  },
+  owners: ["YOUR_DISCORD_USER_ID"],
   security: {
     allowedOrigins: ["http://localhost:3000"],
     csrfSecret: process.env.GUILDGATE_CSRF_SECRET!,
     auditIpSalt: process.env.GUILDGATE_AUDIT_IP_SALT!,
     session: {
-      ttlMs: 12 * 60 * 60_000,
+      ttlMs: 7 * 24 * 60 * 60_000,
       idleTimeoutMs: 30 * 60_000,
       rotateAfterMs: 15 * 60_000,
       maximumSessionsPerUser: 5,
     },
   },
   stores,
+  transactions: createMemoryTransactionAdapter(),
 });
 ```
 
-Secrets used by this example must contain enough random bytes. Generate them outside source control:
+The memory adapter is intended for tests and local tools. Its data disappears when the process stops.
 
-```bash
-node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
-```
-
-## A guarded dashboard action
-
-The action definition keeps checks beside the operation they protect.
+## A guarded write action
 
 ```ts
+let currentRevision = 4;
+
 const updateSettings = gate.action({
   name: "guild.settings.update",
 
   parse(value) {
-    const body = value as Record<string, unknown>;
-    if (typeof body.guildId !== "string") throw new Error("guildId is required");
-    if (typeof body.revision !== "number") throw new Error("revision is required");
-    return {
-      guildId: body.guildId,
-      revision: body.revision,
-      settings: body.settings,
+    const input = value as {
+      guildId: string;
+      expectedRevision: number;
+      prefix: string;
     };
+
+    if (!input.guildId || !Number.isInteger(input.expectedRevision)) {
+      throw new Error("Invalid settings input");
+    }
+
+    return input;
   },
 
   resource: (input) => ({ type: "guild", id: input.guildId }),
@@ -119,44 +131,59 @@ const updateSettings = gate.action({
   rateLimit: {
     limit: 20,
     windowMs: 60_000,
-    key: (context, input) => `${context.userId}:${input.guildId}`,
   },
 
   idempotency: {
     ttlMs: 10 * 60_000,
-    scope: (context, input) => `${context.userId}:${input.guildId}`,
+  },
+
+  optimistic: {
+    expected: (input) => input.expectedRevision,
+    current: async () => currentRevision,
+    resource: (input) => `guild:${input.guildId}`,
   },
 
   concurrency: {
-    key: (_context, input) => `guild-settings:${input.guildId}`,
+    key: (_context, input) => `settings:${input.guildId}`,
     ttlMs: 8_000,
-    waitMs: 500,
+    renewEveryMs: 2_000,
+    waitMs: 250,
+  },
+
+  retry: {
+    attempts: 3,
+    baseDelayMs: 50,
+    maximumDelayMs: 500,
+  },
+
+  circuitBreaker: {
+    failureThreshold: 5,
+    resetAfterMs: 30_000,
+  },
+
+  transaction: {
+    isolation: "serializable",
+    hooks: {
+      afterCommit(result) {
+        console.log("Committed revision", result.revision);
+      },
+    },
   },
 
   timeoutMs: 5_000,
 
-  authorize: async (context, input) => {
-    // Replace this with createDiscordGuildAuthorizer(...).require(...),
-    // or use the policy service already present in your application.
-    return context.userId
-      ? { allowed: true }
-      : { allowed: false, code: "AUTHENTICATION_REQUIRED" };
-  },
-
   async execute(context, input) {
-    // The application owns the transaction and the revision check.
-    return database.transaction(async (tx) => {
-      return tx.guildSettings.updateWithRevision({
-        guildId: input.guildId,
-        expectedRevision: input.revision,
-        settings: input.settings,
-        actorId: context.userId!,
-      });
-    });
-  },
+    context.signal.throwIfAborted();
+    context.transaction;
+    context.fencingToken;
 
-  audit: {
-    changes: (result) => ({ revision: result.revision }),
+    currentRevision += 1;
+
+    return {
+      guildId: input.guildId,
+      prefix: input.prefix,
+      revision: currentRevision,
+    };
   },
 
   cache: {
@@ -168,232 +195,232 @@ const updateSettings = gate.action({
     events: (result) => [{
       event: "guild.settings.updated",
       channel: `guild:${result.guildId}`,
-      data: { revision: result.revision },
+      data: result,
     }],
   },
-});
-```
 
-A browser write request must include the session cookie, the CSRF token, and an idempotency key:
-
-```http
-PATCH /api/guilds/123/settings
-Origin: https://dashboard.example.com
-X-CSRF-Token: <session-bound-token>
-Idempotency-Key: <random-request-id>
-```
-
-## Discord login
-
-```ts
-import { createTokenCipher } from "@kavtuai/guildgate";
-import { createDiscordOAuth } from "@kavtuai/guildgate/discord";
-
-const cipher = createTokenCipher({
-  activeKeyId: "2026-01",
-  keys: {
-    "2026-01": process.env.GUILDGATE_TOKEN_KEY_BASE64!,
-  },
-});
-
-const discord = createDiscordOAuth({
-  kernel: gate,
-  cipher,
-  config: {
-    clientId: process.env.DISCORD_CLIENT_ID!,
-    clientSecret: process.env.DISCORD_CLIENT_SECRET!,
-    redirectUri: "https://dashboard.example.com/auth/discord/callback",
-    scopes: ["identify", "guilds"],
+  audit: {
+    changes: (result) => result,
   },
 });
 ```
 
-Login start:
+Unsafe HTTP methods require an approved origin and a session-bound CSRF token unless an action explicitly disables the check. A state-changing action should normally keep both checks enabled.
 
-```ts
-const login = await discord.beginLogin({ returnTo: "/dashboard", locale: "en" });
-response.header("set-cookie", login.stateCookie);
-response.redirect(login.authorizationUrl);
-```
-
-Callback:
-
-```ts
-const result = await discord.completeLogin({
-  code: request.query.code,
-  state: request.query.state,
-  stateCookie: request.cookies["__Host-guildgate.oauth"],
-});
-
-response.header("set-cookie", [result.setCookie, result.clearStateCookie]);
-response.redirect(result.returnTo);
-```
-
-The OAuth callback accepts only a local return path. It will not redirect to a caller-supplied external host.
-
-## Guild permission checks
-
-```ts
-import { createDiscordGuildAuthorizer } from "@kavtuai/guildgate/discord";
-
-const guildAccess = createDiscordGuildAuthorizer({
-  oauth: discord,
-  botToken: process.env.DISCORD_BOT_TOKEN!,
-  botUserId: process.env.DISCORD_BOT_USER_ID!,
-  cache: gate.cache,
-});
-
-const saveAction = gate.action({
-  name: "guild.settings.save",
-  parse: parseSettings,
-  resource: (input) => ({ type: "guild", id: input.guildId }),
-  authorize: guildAccess.require({
-    guildId: (input) => input.guildId,
-    userPermissions: ["MANAGE_GUILD"],
-    botPermissions: ["VIEW_CHANNEL", "MANAGE_ROLES"],
-    consistency: "live",
-  }),
-  execute: saveSettings,
-});
-```
-
-Use live checks for writes that change Discord or security-sensitive settings. Short cached checks are suitable for low-risk display data. Invalidate permission cache entries when member roles, guild roles, or bot membership change.
-
-## Database choice
-
-`GuildGateStores` is the complete storage contract:
-
-```ts
-interface GuildGateStores {
-  sessions: SessionStore;
-  oauthStates: OAuthStateStore;
-  credentials: OAuthCredentialStore;
-  rateLimits: RateLimitStore;
-  cache: CacheStore;
-  idempotency: IdempotencyStore;
-  locks: LockStore;
-  audit: AuditStore;
-  outbox: OutboxStore;
-  policies: PolicyStore;
-}
-```
-
-A project may put durable records in its main database and short-lived records in Redis:
-
-```ts
-import { composeStores, createMemoryStoreBundle } from "@kavtuai/guildgate";
-import {
-  createRedisEphemeralStores,
-  fromNodeRedis,
-} from "@kavtuai/guildgate/redis";
-
-const temporary = createRedisEphemeralStores(fromNodeRedis(redis), {
-  prefix: "mybot:guildgate",
-});
-
-const stores = composeStores(createMemoryStoreBundle(), {
-  ...temporary,
-  credentials: postgresCredentialStore,
-  audit: postgresAuditStore,
-  outbox: postgresOutboxStore,
-  policies: postgresPolicyStore,
-});
-```
-
-The memory fallback in that snippet is shown to explain composition. A production application should provide durable implementations for every record it must retain across restarts.
-
-See [Custom stores](./docs/custom-stores.md) for contracts and transaction notes.
-
-## Fastify and Express adapters
-
-The adapters use structural request and response types, so GuildGate does not install either framework.
+## HTTP adapters
 
 ```ts
 import { fastifyActionHandler } from "@kavtuai/guildgate/fastify";
 
-fastify.patch(
+app.patch(
   "/api/guilds/:guildId/settings",
-  fastifyActionHandler(gate, updateSettings),
+  fastifyActionHandler(gate, updateSettings, {
+    input: (request) => ({
+      ...(request.body as object),
+      guildId: (request.params as { guildId: string }).guildId,
+    }),
+  }),
 );
 ```
+
+Equivalent entry points are available at:
 
 ```ts
 import { expressActionHandler } from "@kavtuai/guildgate/express";
-
-app.patch(
-  "/api/guilds/:guildId/settings",
-  expressActionHandler(gate, updateSettings),
-);
+import { honoActionHandler } from "@kavtuai/guildgate/hono";
 ```
 
-## Realtime access
-
-`createRealtimeHub()` does not open a socket server. Connect it to `ws`, uWebSockets.js, Socket.IO, Bun, or another transport through the small `RealtimeConnection` interface.
-
-Every connection must pass an allowed `Origin` and a valid session token. Each channel subscription has its own authorization callback. The hub also applies message size limits, message-rate limits, idle expiry, maximum connection lifetime, subscription caps, and slow-client handling.
-
-See [Architecture](./docs/architecture.md) and the [realtime sequence](./docs/uml/realtime-sequence.mmd).
-
-## Owner controls
-
-The configured owner IDs can be used by the application to expose protected management routes. The kernel includes methods for:
+## PostgreSQL
 
 ```ts
-await gate.owner.setMaintenance({ enabled: true, reason: "database migration" });
-await gate.owner.block({ subjectType: "user", subjectId: "123", reason: "abuse" });
-await gate.owner.unblock("user", "123");
-await gate.revokeUserSessions("123");
+import { Pool } from "pg";
+import { createPostgresAdapter } from "@kavtuai/guildgate/postgres";
+
+const postgres = createPostgresAdapter({
+  pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+});
+
+await postgres.migrate();
+
+const gate = createGuildGate({
+  // app and security settings
+  stores: postgres.stores,
+  transactions: postgres.transactions,
+});
 ```
 
-Owner routes must still pass session, CSRF, origin, rate-limit, and audit checks. Do not call these methods from public routes without an owner authorization check.
+The PostgreSQL bundle contains sessions, OAuth state, credentials, limits, cache, idempotency, leases, audit, policies, outbox rows, realtime sequences and analytics points. Outbox claims use row locks with `SKIP LOCKED` so separate workers can claim different rows.
 
-## Production rules
+Print the migration without connecting to a database:
 
-GuildGate rejects these production settings:
+```bash
+npx guildgate-migration --prefix guildgate
+```
 
-- A non-HTTPS application base URL.
-- An empty origin allowlist.
-- An HTTP or localhost origin.
-- A session cookie with `Secure` disabled.
-- A Discord callback URL that does not use HTTPS.
-- Short CSRF and audit hashing secrets.
+Custom database implementations can use the contracts in `GuildGateStores` and verify behavior with `runStoreContract()`.
 
-Application responsibilities remain:
+## Realtime transports
 
-- Use a trusted reverse-proxy configuration and obtain the real client IP safely.
-- Keep bot tokens, OAuth secrets, encryption keys, and database credentials outside source control.
-- Run database changes in transactions where the driver supports them.
-- Apply optimistic revision checks when multiple managers can edit one record.
-- Keep audit and outbox data under retention policies.
-- Back up durable records and test restore procedures.
-- Pass cancellation signals to database and HTTP clients where supported.
-- Review Discord permission and API changes before each major release.
+The core hub owns authentication, origin checks, subscription authorization, limits and session validation. A transport adapter connects it to the network library selected by the application.
 
-## Repository checks
+```ts
+import {
+  attachWebSocket,
+  createRealtimeHub,
+  MemoryRealtimeEventLog,
+} from "@kavtuai/guildgate/realtime";
+
+const eventLog = new MemoryRealtimeEventLog();
+
+const hub = createRealtimeHub({
+  sessions: gate.sessions,
+  rateLimits: gate.config.stores.rateLimits,
+  allowedOrigins: gate.config.security.allowedOrigins,
+});
+
+await attachWebSocket({
+  socket,
+  hub,
+  origin: request.headers.origin,
+  sessionToken,
+  eventLog,
+  authorize: async ({ userId, channel }) => {
+    return canUserOpenChannel(userId, channel);
+  },
+});
+```
+
+The same module exports `attachSocketIo()`, `createServerSentEventStream()`, `MemorySessionRevocationBus`, `createSequencedPublisher()` and `createOutboxWorker()`.
+
+## Bot and server monitoring
+
+```ts
+import {
+  MemoryAnalyticsStore,
+  StatusMonitor,
+  createDiscordJsBotCollector,
+} from "@kavtuai/guildgate/analytics";
+
+const analytics = new MemoryAnalyticsStore();
+
+const monitor = new StatusMonitor({
+  store: analytics,
+  intervalMs: 30_000,
+  bot: createDiscordJsBotCollector(discordClient),
+  probes: [
+    {
+      id: "database",
+      label: "PostgreSQL",
+      timeoutMs: 2_000,
+      async check(signal) {
+        await pingDatabase(signal);
+        return { status: "operational" };
+      },
+    },
+  ],
+});
+
+monitor.start();
+```
+
+Recorded metrics include process memory, CPU time, event-loop delay, uptime, bot readiness, gateway latency, guild count, user reach, shard count and command count. Applications may write any additional `MetricPoint` values.
+
+## Charts and tables
+
+```ts
+import {
+  bucketMetrics,
+  buildAnalyticsTable,
+  renderLineChartSvg,
+} from "@kavtuai/guildgate/analytics";
+
+const points = await analytics.query({
+  names: ["bot.websocket.ping_ms"],
+  from: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+});
+
+const buckets = bucketMetrics(points, 5 * 60_000);
+
+const svg = renderLineChartSvg({
+  title: "Gateway latency",
+  labels: buckets.map((bucket) => bucket.start),
+  series: [{
+    name: "p95",
+    values: buckets.map((bucket) => bucket.p95),
+  }],
+});
+```
+
+`renderBarChartSvg()` and `renderDonutChartSvg()` return standalone SVG strings. `buildAnalyticsTable()` returns columns and rows that can be rendered by React, Vue, Svelte, plain HTML or a JSON API.
+
+## Session and owner APIs
+
+```ts
+import { createOperatorActions } from "@kavtuai/guildgate/operator";
+
+const operator = createOperatorActions({
+  kernel: gate,
+  analytics,
+});
+
+app.get("/api/sessions", fastifyActionHandler(gate, operator.listSessions));
+app.delete("/api/sessions/:sessionId", fastifyActionHandler(gate, operator.revokeSession));
+app.get("/api/owner/audit", fastifyActionHandler(gate, operator.listAudit));
+app.get("/api/owner/policies", fastifyActionHandler(gate, operator.inspectPolicies));
+app.get("/api/owner/metrics", fastifyActionHandler(gate, operator.queryMetrics));
+```
+
+Owner actions use the `owners` list supplied to `createGuildGate()`. Maintenance changes, block operations and audit queries still pass through session, origin, CSRF, rate and audit behavior defined by the action.
+
+## OpenTelemetry
+
+```ts
+import * as otel from "@opentelemetry/api";
+import { createOpenTelemetryHooks } from "@kavtuai/guildgate/telemetry";
+
+const telemetry = createOpenTelemetryHooks(otel, {
+  name: "my-dashboard",
+  version: "2.4.0",
+});
+```
+
+Pass `telemetry` to `createGuildGate()`. The bridge records action spans, counts and duration histograms without forcing an SDK or exporter.
+
+## Discord OAuth and permissions
+
+Discord OAuth state is single-use and bound to the browser that started login. Tokens are stored through the configured credential store after encryption by the application key ring.
+
+Permission helpers use `bigint` and cover user permissions, bot permissions, guild ownership and role hierarchy. The `discordjs` entry point can read compatible guild and member objects from a discord.js client without adding discord.js as a dependency of GuildGate.
+
+## Validation commands
 
 ```bash
 npm run typecheck
 npm test
 npm run pack:check
-node ./bin/guildgate-doctor.mjs
+npm run test:load
+npx guildgate-doctor --help
+npx guildgate-writing-check --help
+npx guildgate-migration --help
 ```
 
-The doctor command reads environment variables and reports missing or unsafe deployment settings. It does not send secrets anywhere.
+## Release status
 
-## Documentation
+`1.0.0` is ready for stable publication. The package contract, migration policy, threat model, security response process, maintainer audit, regression tests, package checks and local load harness are included in this source tree. Production users still need deployment-specific tests for their Redis, PostgreSQL, Discord, proxy and authorization setup.
 
-- [Setup and first release](./docs/setup.md)
-- [Architecture](./docs/architecture.md)
-- [Custom storage drivers](./docs/custom-stores.md)
-- [Owner management routes](./docs/owner-management.md)
-- [Threat model](./docs/threat-model.md)
-- [Writing rules](./docs/WRITING_STYLE.md)
-- [Research notes](./docs/research-notes.md)
-- [Local test report](./TEST_REPORT.md)
-- [Release plan](./ROADMAP.md)
-- [Security reporting](./SECURITY.md)
-- [UML files](./docs/uml)
+See:
+
+- [ROADMAP.md](ROADMAP.md)
+- [MIGRATION.md](MIGRATION.md)
+- [OPERATING_LIMITS.md](OPERATING_LIMITS.md)
+- [SECURITY.md](SECURITY.md)
+- [SECURITY_AUDIT.md](SECURITY_AUDIT.md)
+- [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md)
+- [docs/threat-model.md](docs/threat-model.md)
+- [docs/contracts/stable-adapters.md](docs/contracts/stable-adapters.md)
+- [docs/configuration.md](docs/configuration.md)
+- [docs/analytics.md](docs/analytics.md)
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+MIT

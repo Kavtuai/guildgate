@@ -8,6 +8,14 @@ export function isUnsafeMethod(method: HttpMethod): boolean {
   return unsafeMethods.has(method);
 }
 
+export function parseHttpMethod(value: string): HttpMethod {
+  const method = value.toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    throw errors.inputInvalid({ field: "method" });
+  }
+  return method as HttpMethod;
+}
+
 export function normalizeOrigin(value: string): string {
   const url = new URL(value);
   return `${url.protocol}//${url.host}`;
@@ -73,7 +81,10 @@ export function validateCookieConfig(config: CookieConfig): void {
   if (!config.name || /[\s;,=]/.test(config.name)) {
     throw errors.configuration("Session cookie name is invalid");
   }
-  if (!config.path.startsWith("/")) throw errors.configuration("Session cookie path must start with /");
+  if (!config.path.startsWith("/") || /[\r\n;]/.test(config.path)) throw errors.configuration("Session cookie path is invalid");
+  if (!Number.isInteger(config.maxAgeSeconds) || config.maxAgeSeconds < 1 || config.maxAgeSeconds > 31_536_000) {
+    throw errors.configuration("Session cookie maxAgeSeconds must be an integer between 1 and 31536000");
+  }
   if (config.name.startsWith("__Host-") && (!config.secure || config.path !== "/")) {
     throw errors.configuration("__Host- cookies require Secure and Path=/");
   }

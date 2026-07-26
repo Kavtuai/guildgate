@@ -24,8 +24,9 @@ interface AttachedConnection {
 export interface RealtimeHub {
   attach(input: { connection: RealtimeConnection; origin: string | undefined; sessionToken: string | undefined }): Promise<void>;
   detach(connectionId: string): void;
-  subscribe(input: { connectionId: string; channel: string; authorize: (session: SessionRecord, channel: string) => Promise<boolean> }): Promise<void>;
+  subscribe(input: { connectionId: string; channel: string; authorize: (session: SessionRecord, channel: string) => Promise<boolean> }): Promise<boolean>;
   unsubscribe(connectionId: string, channel: string): void;
+  touch(connectionId: string): void;
   acceptMessage(connectionId: string, payload: string): Promise<unknown>;
   publish(event: RealtimeEvent): Promise<void>;
   revokeSession(sessionIdHash: string): void;
@@ -41,6 +42,7 @@ export function createRealtimeHub(input: {
   maximumLifetimeMs?: number;
   maximumMessageBytes?: number;
   maximumSubscriptions?: number;
+  maximumChannelLength?: number;
   maximumBufferedBytes?: number;
   messagesPerWindow?: number;
   messageWindowMs?: number;
@@ -82,21 +84,35 @@ export function createRealtimeHub(input: {
 
     async subscribe({ connectionId, channel, authorize }) {
       const record = requireConnection(connectionId);
+      if (!channel || channel.length > (input.maximumChannelLength ?? 256) || /[\u0000-\u001f\u007f]/.test(channel)) {
+        await send(record, { type: "error", code: "INVALID_CHANNEL" });
+        return false;
+      }
+      if (record.subscriptions.has(channel)) {
+        await send(record, { type: "subscribed", channel });
+        return true;
+      }
       if (record.subscriptions.size >= (input.maximumSubscriptions ?? 20)) {
         record.connection.close(1008, "Subscription limit exceeded");
         removeConnection(connectionId);
-        return;
+        return false;
       }
       if (!await authorize(record.session, channel)) {
         await send(record, { type: "error", code: "SUBSCRIPTION_DENIED", channel });
-        return;
+        return false;
       }
       record.subscriptions.add(channel);
       await send(record, { type: "subscribed", channel });
+      return true;
     },
 
     unsubscribe(connectionId, channel) {
       connections.get(connectionId)?.subscriptions.delete(channel);
+    },
+
+    touch(connectionId) {
+      const record = connections.get(connectionId);
+      if (record) record.lastSeenAtMs = Date.now();
     },
 
     async acceptMessage(connectionId, payload) {
@@ -119,7 +135,13 @@ export function createRealtimeHub(input: {
         return null;
       }
       record.lastSeenAtMs = Date.now();
-      return JSON.parse(payload) as unknown;
+      try {
+        return JSON.parse(payload) as unknown;
+      } catch {
+        record.connection.close(1007, "Invalid JSON payload");
+        removeConnection(connectionId);
+        return null;
+      }
     },
 
     async publish(event) {

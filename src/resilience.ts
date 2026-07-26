@@ -51,7 +51,7 @@ export async function runWithDeadline<T>(input: {
 
 function defaultShouldRetry(error: unknown): boolean {
   if (error instanceof GuildGateError) return error.retryable;
-  return error instanceof TypeError;
+  return false;
 }
 
 function jitteredDelay(options: RetryOptions, attempt: number): number {
@@ -70,29 +70,67 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+export type CircuitStatus = "closed" | "open" | "half-open";
+
 interface CircuitState {
   failures: number;
   openUntilMs: number;
+  halfOpenInFlight: boolean;
+  lastFailureAtMs?: number;
+}
+
+export interface CircuitSnapshot {
+  name: string;
+  status: CircuitStatus;
+  failures: number;
+  openUntilMs: number;
+  lastFailureAtMs?: number;
 }
 
 export class CircuitBreaker {
   private readonly states = new Map<string, CircuitState>();
 
-  constructor(private readonly input: { failureThreshold: number; resetAfterMs: number }) {}
+  constructor(private readonly input: { failureThreshold: number; resetAfterMs: number }) {
+    if (input.failureThreshold < 1 || input.resetAfterMs < 1) throw new TypeError("Invalid circuit breaker configuration");
+  }
 
   async run<T>(name: string, execute: () => Promise<T>): Promise<T> {
     const now = Date.now();
-    const state = this.states.get(name) ?? { failures: 0, openUntilMs: 0 };
+    const state = this.states.get(name) ?? { failures: 0, openUntilMs: 0, halfOpenInFlight: false };
     if (state.openUntilMs > now) throw errors.upstreamUnavailable({ circuit: name, openUntilMs: state.openUntilMs });
+    const halfOpen = state.failures >= this.input.failureThreshold && state.openUntilMs <= now;
+    if (halfOpen && state.halfOpenInFlight) throw errors.upstreamUnavailable({ circuit: name, halfOpen: true });
+    if (halfOpen) state.halfOpenInFlight = true;
+    this.states.set(name, state);
     try {
       const result = await execute();
       this.states.delete(name);
       return result;
     } catch (error) {
       state.failures += 1;
-      if (state.failures >= this.input.failureThreshold) state.openUntilMs = now + this.input.resetAfterMs;
+      state.lastFailureAtMs = Date.now();
+      state.halfOpenInFlight = false;
+      if (state.failures >= this.input.failureThreshold) state.openUntilMs = Date.now() + this.input.resetAfterMs;
       this.states.set(name, state);
       throw error;
     }
+  }
+
+  inspect(name?: string): CircuitSnapshot[] {
+    const now = Date.now();
+    return [...this.states.entries()]
+      .filter(([key]) => !name || key === name)
+      .map(([key, state]) => ({
+        name: key,
+        status: state.openUntilMs > now ? "open" : state.failures >= this.input.failureThreshold ? "half-open" : "closed",
+        failures: state.failures,
+        openUntilMs: state.openUntilMs,
+        lastFailureAtMs: state.lastFailureAtMs,
+      }));
+  }
+
+  reset(name?: string): void {
+    if (name) this.states.delete(name);
+    else this.states.clear();
   }
 }

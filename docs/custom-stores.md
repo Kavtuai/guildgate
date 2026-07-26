@@ -62,7 +62,7 @@ A read followed by a write without a transaction is not sufficient for multiple 
 
 `acquire()` writes a lease only when no valid lease exists. `release()` must compare the token before deleting the lease. Deleting a lock by key alone can release a newer owner’s lock.
 
-Long operations should renew leases or use a driver whose transaction lock lasts for the operation. GuildGate 0.1.0 does not include lease renewal.
+Long operations should implement the optional lease methods and use `DistributedLockManager` renewal. A database update that can outlive a lease should also compare the fencing token so a stale owner cannot commit.
 
 ### AuditStore
 

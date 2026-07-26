@@ -1,17 +1,27 @@
-# Kurulum ve ilk yayın
+# Kurulum, tüketici testi ve yayın
 
-## 1. Depoyu hazırlama
+## Kaynak arşivini kurma
 
 ```bash
-unzip guildgate-0.1.0.zip
-cd guildgate-0.1.0
-npm install
-npm test
+unzip GuildGate-1.0.0-kavtuai.zip
+cd guildgate-1.0.0
+npm ci
+npm run release:verify
 ```
 
-İlk internet bağlantılı geliştirme bilgisayarında `npm install`, `package-lock.json` dosyasını oluşturur. İlk pull request öncesinde bu dosyayı commit edin.
+Node.js 22 veya daha yeni bir sürüm kullanın. CI ve katkı veren makinelerin aynı geliştirme bağımlılıklarını kurması için `package-lock.json` dosyasını depoda tutun.
 
-## 2. Yapılandırma kontrolü
+## Uygulamaya ekleme
+
+Bir uygulama yayımlanmış paketi npm üzerinden kurar:
+
+```bash
+npm install @kavtuai/guildgate
+```
+
+Fastify, Hono, PostgreSQL istemcisi, Redis istemcisi, `ws` ve discord.js gibi çalışma zamanı bağımlılıkları uygulama tarafından seçilir.
+
+## Ortam kontrolü
 
 `.env.example` dosyasını özel bir ortam dosyasına kopyalayın ve her gizli değer için ayrı rastgele veri üretin.
 
@@ -19,45 +29,61 @@ npm test
 node ./bin/guildgate-doctor.mjs
 ```
 
-Son kontrolde `GUILDGATE_ENVIRONMENT=production` kullanın. Doctor; HTTPS, origin listesi, gizli değer uzunlukları ve token şifreleme anahtarını kontrol eder.
+Dağıtım kontrolünde `GUILDGATE_ENVIRONMENT=production` kullanın. Bu mod HTTPS, izinli origin listesi, gizli değer uzunlukları ve token şifreleme anahtarı biçimini denetler.
 
-## 3. GitHub deposu
+## Veri sürücüsü seçimi
 
-`kavtuai` hesabında `guildgate` adında boş ve herkese açık bir depo oluşturun.
+- Test ve tek process geliştirme için memory store
+- Paylaşılan kısa ömürlü kayıtlar için Redis store
+- Kalıcı kayıtlar, transaction, analitik, realtime sequence ve outbox claim için yerleşik PostgreSQL adapteri
+- `runStoreContract()` testini geçen özel sürücüler
+
+PostgreSQL SQL çıktısını uygulamadan önce inceleyin:
 
 ```bash
-git init
-git branch -M main
-git add .
-git commit -m "feat: initial GuildGate release"
-git remote add origin git@github.com:kavtuai/guildgate.git
-git push -u origin main
+npx guildgate-migration --prefix guildgate > guildgate.sql
 ```
 
-`main` dalı için koruma, zorunlu CI ve CodeQL kontrolü, pull request incelemesi, secret scanning, private vulnerability reporting ve Dependabot özelliklerini açın.
+Şema değişikliklerini her process açılışında otomatik çalıştırmak yerine uygulamanın migration sistemiyle yönetin.
 
-## 4. npm ayarı
+## Temiz tüketici testi
 
-Paket adı `@kavtuai/guildgate` olarak tanımlıdır. npm tarafında `kavtuai` scope’u herkese açık scoped paket yayımlayabilmelidir.
+```bash
+mkdir guildgate-consumer-test
+cd guildgate-consumer-test
+npm init -y
+npm install /paket/yolu/kavtuai-guildgate-1.0.0.tgz
+node -e "import('@kavtuai/guildgate').then(m => console.log(typeof m.createGuildGate))"
+npx guildgate-doctor --help
+npx guildgate-migration --help
+```
 
-npm trusted publishing ayarını bu GitHub deposu ve `.github/workflows/publish.yml` dosyasıyla eşleyin. Bu yapı GitHub OIDC kullanır ve uzun süreli npm tokenı gerektirmez.
+Import komutu `function` yazmalı; CLI komutları hata vermeden kapanmalıdır.
+
+## Uygulamaya bağlama sırası
+
+1. Store ve transaction sahipliğini seçin.
+2. Çekirdeği kurun ve doctor komutunu çalıştırın.
+3. Discord OAuth başlangıç ve callback endpoint’lerini ekleyin.
+4. Oturuma bağlı CSRF tokenını kimliği doğrulanmış başlangıç endpoint’iyle verin.
+5. Bir okuma ve bir idempotent yazma işlemi hazırlayın.
+6. Korumalı işlemlere canlı kullanıcı ve bot sunucu yetkisi ekleyin.
+7. Aynı kaydı birden fazla kişi değiştirebiliyorsa revision kontrolü kullanın.
+8. Birlikte commit edilmesi gereken domain kaydı ve outbox olayı için transaction adapteri kullanın.
+9. Denetim, outbox, analitik ve realtime kayıtlarına retention ekleyin.
+10. HTTP yetkilendirmesi bittikten sonra WebSocket, Socket.IO veya SSE bağlayın.
+11. Operator işlemlerini yalnızca açık owner yetkisi arkasında sunun.
+12. Rol kaybı, botun çıkarılması, session iptali, Redis kesintisi, veritabanı zaman aşımı, çift yazma ve reconnect cursor senaryolarını test edin.
+
+## GitHub ve npm yayını
+
+`main` dalını koruyun; CI ve CodeQL kontrollerini zorunlu yapın. Yayını GitHub Release üzerinden npm Trusted Publisher/OIDC ile çalıştırın. Güven ilişkisi kurulduktan sonra iş istasyonundan doğrudan npm yayını kapalı tutulmalıdır.
 
 Yayın öncesi:
 
 ```bash
-npm login
-npm whoami
-npm run pack:check
+npm run release:verify
+npm pack --json
 ```
 
-## 5. İlk uygulama bağlantısı
-
-1. Kalıcı ve kısa ömürlü veri sürücülerini seçin.
-2. Çekirdeği kurun ve doctor komutunu çalıştırın.
-3. Discord OAuth başlangıç ve callback endpoint’lerini ekleyin.
-4. Giriş yapmış frontend’e CSRF tokenı veren başlangıç endpoint’ini ekleyin.
-5. Bir okuma ve bir idempotent yazma işlemi hazırlayın.
-6. Yazma işlemine canlı Discord sunucu yetkisi kontrolü ekleyin.
-7. Denetim ve outbox saklama görevlerini hazırlayın.
-8. HTTP yetkilendirmesi tamamlandıktan sonra gerçek zamanlı merkezi bağlayın.
-9. Rol kaldırma, botu sunucudan çıkarma, oturum iptali, Redis kesintisi, veritabanı zaman aşımı ve çift kayıt senaryolarını test edin.
+Tag değeri `v` ile `package.json` sürümünün birleşimi olmalıdır. `1.0.0` sürümü `npm run release:verify` kontrolünden geçmelidir; bakımcı incelemesi `SECURITY_AUDIT.md` dosyasında kayıtlıdır.

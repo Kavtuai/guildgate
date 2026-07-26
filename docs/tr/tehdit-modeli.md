@@ -1,39 +1,32 @@
 # Tehdit modeli
 
-## Korunan veriler
+## Korunan varlıklar
 
-Discord bot tokenı, OAuth sırrı, OAuth tokenları, oturumlar, sunucu ayarları, moderasyon işlemleri, denetim geçmişi, sahip politikaları ve gerçek zamanlı sunucu olayları korunur.
+Discord bot tokenı, OAuth sırrı ve tokenları, session kayıtları, sunucu ayarları, audit geçmişi, owner politikaları, realtime olayları, analitik operasyon verileri ve panel erişilebilirliği korunur.
 
 ## Dikkate alınan saldırılar
 
-- Kimlik doğrulamamış internet isteği.
-- Hedef sunucuda yetkisi olmayan oturum sahibi.
-- Rolü kaldırılmış ancak paneli açık kalan eski yönetici.
-- CSRF veya siteler arası WebSocket bağlantısı kuran başka site.
-- OAuth callback, istek veya idempotency tekrar saldırısı.
-- Çok sayıda istek, büyük socket mesajı veya yavaş istemci.
-- Gizli değerleri loglayan uygulama hatası.
-- Düşük yetkili veritabanı hesabının ele geçirilmesi.
-- Paket yayın zincirine müdahale.
+Yetkisiz internet isteği, yanlış sunucuya işlem, eski yönetici session'ı, CSRF, siteler arası socket, OAuth veya yazma tekrar saldırısı, eş zamanlı yazar, süresi geçmiş lock sahibi, yavaş realtime istemcisi, gizli değer logu, düşük yetkili veri tabanı hesabı ve paket yayın zinciri saldırısı dikkate alınır.
 
-## Başlıca kontroller
+## Kontroller
 
-- HttpOnly oturum çerezi ve sunucuda yalnızca token hash’i.
-- Girişte ve belirli aralıklarla yeni oturum kimliği.
-- Yazma isteklerinde tam origin ve oturuma bağlı CSRF kontrolü.
-- OAuth state için tek kullanımlık kayıt ve tarayıcı nonce eşlemesi.
-- Harici adrese yönlendirmeyi reddeden yerel dönüş path’i.
-- Kullanıcı ve bot Discord izinlerinin ayrı kontrolü.
-- İzin gerektiren yazmalarda canlı kontrol seçeneği.
-- Idempotency kaydı, kaynak kilidi ve uygulama revision kontrolü.
-- İşlem bazlı rate limit ve zaman aşımı.
-- Kanal başına WebSocket abonelik yetkisi.
-- Mesaj boyutu, abonelik, boşta kalma, ömür ve buffer sınırı.
-- Gizli alanları maskeleyen denetim kaydı.
-- Commit sonrasında teslim için outbox.
+- HttpOnly session çerezi ve sunucuda token hash'i
+- login ve süreye bağlı session yenileme
+- unsafe metotlarda exact-origin ve session'a bağlı CSRF
+- tek kullanımlık, tarayıcı nonce değerine bağlı OAuth state
+- sunucu taraflı kaynak ve Discord yetki kontrolü
+- idempotency replay ve optimistic revision
+- yenilenen lease ve fencing token
+- timeout, retry ve circuit breaker
+- kanal başına subscription yetkisi
+- realtime buffer ve kuyruk sınırı
+- transaction ile outbox kaydı
+- çoklu worker claim lease'i
+- owner action yetkisi, rate ve audit
+- CI ve OIDC trusted publishing
 
-## Kapsam dışı
+## Kalan riskler
 
-GuildGate ele geçirilmiş sunucuyu, çalınmış deployment sırrını, TLS ve firewall kurulumunu, veritabanı rollerini, yedeklemeyi, uygulamaya özel şema doğrulamasını veya yanlış yazılmış bot politikasını kendiliğinden düzeltemez.
+Özel store atomik kuralları bozabilir. Fencing token kullanmayan veri tabanı eski yazarı kabul edebilir. Yanlış retry politikası dış serviste işlemi tekrarlayabilir. Outbox teslimi worker çökmesinde tekrar edebilir. Realtime sequence kanallar arasında global sıra vermez. Yüksek cardinality metrik maliyet yaratabilir. Paket içindeki inceleme bakımcı tarafından yapılmıştır; bağımsız üçüncü taraf denetimi iddiası taşımaz. Ayrı güvence gereken dağıtımlar `EXTERNAL_REVIEW_GUIDE.md` kapsamını kullanmalıdır.
 
-0.1.0 sürümünde Redis kilit yenileme yardımcısı yoktur. Genel denetim kaydı action sonucundan sonra yazılır. Discord REST yardımcısı süreç genelinde route bucket yöneticisi değildir. Bu sınırlar üretim tasarımında hesaba katılmalıdır.
+GuildGate ele geçirilmiş hostu, TLS/firewall kurulumunu, veri tabanı rolünü, secret manager'ı, yedeklemeyi ve uygulamaya özel bot politikasını yönetmez.

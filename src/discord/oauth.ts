@@ -76,6 +76,14 @@ export function createDiscordOAuth(input: {
   const credentialStore = input.credentialStore ?? input.kernel.config.stores.credentials;
   const stateCookieName = config.stateCookieName ?? (input.kernel.config.app.environment === "production" ? "__Host-guildgate.oauth" : "guildgate.oauth");
   const scopes = config.scopes ?? ["identify", "guilds"];
+  if (!config.clientId.trim() || !config.clientSecret.trim()) throw errors.configuration("Discord OAuth clientId and clientSecret are required");
+  if ((config.stateTtlMs ?? 10 * 60_000) < 60_000 || (config.stateTtlMs ?? 10 * 60_000) > 60 * 60_000) {
+    throw errors.configuration("Discord OAuth stateTtlMs must be between 1 minute and 1 hour");
+  }
+  if ((config.requestTimeoutMs ?? 5_000) < 500 || (config.requestTimeoutMs ?? 5_000) > 60_000) {
+    throw errors.configuration("Discord OAuth requestTimeoutMs must be between 500ms and 60 seconds");
+  }
+  if (!scopes.length || scopes.some((scope) => !/^[a-zA-Z0-9._-]{1,64}$/.test(scope))) throw errors.configuration("Discord OAuth scopes are invalid");
   validateStateCookieName(stateCookieName, input.kernel.config.app.environment === "production");
   validateRedirectUri(config.redirectUri, input.kernel.config.app.environment);
 
@@ -241,7 +249,8 @@ export function createDiscordOAuth(input: {
           });
         }
         if (!response.ok) {
-          throw errors.oauthFailed({ status: response.status, body: await response.text().catch(() => "") });
+          const body = (await response.text().catch(() => "")).slice(0, 2_048);
+          throw errors.oauthFailed({ status: response.status, body });
         }
         return response;
       },
@@ -258,12 +267,13 @@ async function parseJson<T>(response: Response): Promise<T> {
 }
 
 function safeReturnTo(value: string): string {
-  if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return "/dashboard";
+  if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\") || /[\r\n\u0000]/.test(value) || value.length > 2_048) return "/dashboard";
   return value;
 }
 
 function validateRedirectUri(value: string, environment: string): void {
   const url = new URL(value);
+  if (url.username || url.password || url.hash) throw errors.configuration("Discord redirect URI cannot contain credentials or a fragment");
   if (environment === "production" && url.protocol !== "https:") {
     throw errors.configuration("Discord redirect URI must use HTTPS in production");
   }

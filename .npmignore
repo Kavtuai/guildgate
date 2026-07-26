@@ -1,7 +1,6 @@
 src/
 tests/
-examples/
-docs/
 .github/
+scripts/
 tsconfig.json
 *.zip

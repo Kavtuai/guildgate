@@ -2,35 +2,48 @@
 
 ## Supported versions
 
-Until `1.0.0`, only the newest released minor version receives security fixes. After `1.0.0`, the support window will be stated here before each branch is opened.
+| Version | Status |
+|---|---|
+| `1.0.x` | Supported |
+| `0.1.x` | Unsupported; upgrade to `1.0.x` |
+| Older versions | Unsupported |
 
-## Reporting a vulnerability
+The newest stable minor line receives security fixes. A longer support period may be announced for a specific release.
 
-Do not open a public issue for a suspected vulnerability.
+## Private reporting
 
-Use GitHub private vulnerability reporting for `kavtuai/guildgate` when the repository is available. Include:
+Do not open a public issue for a suspected vulnerability. Use GitHub private vulnerability reporting for `Kavtuai/guildgate`.
 
-- Affected version or commit.
-- Required configuration.
-- Reproduction steps or a small proof of concept.
-- Expected and observed behavior.
-- Possible impact.
-- Any temporary mitigation already tested.
+Include:
 
-Do not include real bot tokens, OAuth secrets, session cookies, database credentials, or user data. Replace them with test values.
+- affected version or commit
+- required configuration
+- reproduction steps or a small proof of concept
+- expected and observed behavior
+- possible impact
+- temporary mitigation already tested
 
-## Response process
+Never include real bot tokens, OAuth secrets, session cookies, database credentials or user data.
 
-The maintainer will first confirm receipt, reproduce the report, assign severity, and decide whether a private patch branch is needed. Publication timing depends on impact, fix availability, and coordination with affected adapter maintainers.
+## Response targets
 
-A security release should include:
+These are maintainer targets, not guaranteed resolution times.
 
-- A fixed package version.
-- Affected version range.
-- Concrete impact and prerequisites.
-- Upgrade or mitigation steps.
-- Credit when the reporter requests it.
+| Stage | Target |
+|---|---:|
+| Receipt confirmation | 3 business days |
+| Initial severity and reproduction update | 7 business days |
+| Critical mitigation or release plan | 3 business days after confirmation |
+| High-severity mitigation or release plan | 10 business days after confirmation |
+
+Complex reports and upstream coordination can change the schedule. Material changes will be shared through the private report.
+
+## Disclosure
+
+A security release should state the affected versions, prerequisites, impact, fixed version and upgrade steps. Reporter credit is included when requested. Public timing is coordinated with the reporter when practical.
 
 ## Security boundaries
 
-The package rejects several unsafe production settings and implements controls described in `docs/threat-model.md`. It does not configure the host, proxy, TLS, firewall, database roles, secret manager, backups, or application-specific authorization policy.
+GuildGate enforces the controls described in `docs/threat-model.md`. It does not configure the host, TLS, proxy trust, firewall, database roles, secret manager, backups, Discord application permissions or application-specific authorization rules.
+
+The completed maintainer review is recorded in `SECURITY_AUDIT.md`. `EXTERNAL_REVIEW_GUIDE.md` describes a handoff for teams that commission a separate assessment.

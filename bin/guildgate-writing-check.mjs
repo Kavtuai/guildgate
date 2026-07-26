@@ -3,7 +3,6 @@ import { readFile, readdir } from "node:fs/promises";
 import { extname, join, relative, resolve } from "node:path";
 
 const args = process.argv.slice(2);
-
 if (args.includes("--help") || args.includes("-h")) {
   console.log([
     "Usage: guildgate-writing-check [options]",
@@ -16,17 +15,12 @@ if (args.includes("--help") || args.includes("-h")) {
   ].join("\n"));
   process.exit(0);
 }
-
-const rootOptionIndex = args.indexOf("--root");
-
-if (rootOptionIndex !== -1 && !args[rootOptionIndex + 1]) {
+const rootIndex = args.indexOf("--root");
+if (rootIndex !== -1 && !args[rootIndex + 1]) {
   console.error("The --root option requires a directory path.");
   process.exit(2);
 }
-
-const root = resolve(
-  rootOptionIndex === -1 ? process.cwd() : args[rootOptionIndex + 1],
-);
+const root = resolve(rootIndex === -1 ? process.cwd() : args[rootIndex + 1]);
 const includedRoots = [
   "README.md",
   "README.tr.md",
@@ -35,21 +29,24 @@ const includedRoots = [
   "SECURITY.md",
   "CONTRIBUTING.md",
   "CODE_OF_CONDUCT.md",
+  "MIGRATION.md",
+  "SECURITY_AUDIT.md",
+  "EXTERNAL_REVIEW_GUIDE.md",
+  "OPERATING_LIMITS.md",
   "docs",
 ];
 const excluded = new Set([
   "docs/WRITING_STYLE.md",
   "docs/tr/yazim-kilavuzu.md",
 ]);
-
 const hardPatterns = [
-  ["assistant boilerplate", /\b(hope this helps|certainly[,!]|here is a polished|in today's fast-paced world|it is important to note)\b/i],
+  ["assistant boilerplate", /\b(hope this helps|certainly[,!]|here is a polished|here is your|in today's fast-paced world|it is important to note|it is worth noting|no discussion would be complete without|up to my last training update)\b/i],
   ["decorative contrast", /\bnot only\b[^.\n]{0,160}\bbut also\b/i],
   ["provider citation artifact", /contentReference|oaicite|turn\d+(?:search|view|fetch)|attributableIndex|ppl-ai-file-upload|grok_card|:::writing/i],
   ["tracking query", /[?&]utm_(?:source|medium|campaign|term|content)=/i],
   ["unfinished placeholder", /\[(?:insert|add source|add name|placeholder)[^\]]*\]/i],
+  ["generic conclusion", /(?:^|\n)\s*(?:in conclusion|in summary|overall)[,:]?\s+/i],
 ];
-
 const watchedWords = /\b(additionally|boasts|bolstered|crucial|delve|enduring|fostering|garner|interplay|intricate|landscape|meticulous|pivotal|robust|showcase|tapestry|testament|underscore|vibrant)\b/gi;
 const failures = [];
 const reviews = [];
@@ -68,10 +65,8 @@ for (const target of includedRoots) {
     if (matches.length) reviews.push({ file: name, words: [...new Set(matches.map((word) => word.toLowerCase()))] });
   }
 }
-
 for (const item of failures) console.error(`FAIL ${item.file}: ${item.label}: ${item.value}`);
 for (const item of reviews) console.error(`REVIEW ${item.file}: ${item.words.join(", ")}`);
-
 if (failures.length || reviews.length) {
   console.error(`Writing check found ${failures.length} failure(s) and ${reviews.length} review item(s).`);
   process.exitCode = 1;

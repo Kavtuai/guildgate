@@ -1,83 +1,38 @@
 # Architecture
 
-GuildGate separates policy, transport, Discord access, and storage. The core package does not import Fastify, Express, Redis, PostgreSQL, MongoDB, or a WebSocket server.
+GuildGate separates policy, transport, Discord access, storage, telemetry and presentation. Optional ecosystems stay behind small interfaces selected by the application.
 
-## Components
+## Main components
 
-1. **Kernel** checks sessions, origins, CSRF tokens, blocks, maintenance state, limits, authorization, idempotency, locks, deadlines, audit records, cache tags, and realtime delivery.
-2. **Session manager** stores only a SHA-256 hash of the opaque session token. Expiry, idle expiry, rotation, caps, and revocation are enforced at resolution time.
-3. **Discord OAuth client** creates one-time state records, binds state to a browser nonce, exchanges codes, encrypts credentials, refreshes access tokens, and revokes credentials.
-4. **Discord authorizer** compares the user’s OAuth guild permissions with the bot’s current guild roles and permissions.
-5. **Store interfaces** allow each application to select storage. Durable and short-lived records can use different services.
-6. **Framework adapters** translate request and response objects without placing framework types in the core package.
-7. **Realtime hub** authenticates connections, authorizes each subscription, limits messages, handles slow clients, and closes sessions on revocation.
-8. **Outbox dispatcher** publishes committed events from a durable outbox implementation.
+1. **Kernel** resolves sessions and applies origin, CSRF, maintenance, block, rate, authorization, idempotency, revision, lease, deadline, transaction, cache, audit and realtime rules.
+2. **Session manager** stores hashes of opaque session tokens and enforces expiry, idle expiry, rotation, caps and revocation.
+3. **Discord OAuth client** uses one-time browser-bound state, encrypted credential records and local return paths.
+4. **Discord authorizer** checks user and bot permissions separately using `bigint`.
+5. **Store contracts** let the application choose memory, Redis, PostgreSQL or custom services.
+6. **Transaction adapters** provide a shared backend context and commit/rollback callbacks.
+7. **Framework handlers** translate Fastify, Express or Hono requests into a common envelope.
+8. **Realtime hub and adapters** authenticate connections, authorize subscriptions, apply limits and support replay.
+9. **Outbox workers** claim committed events and publish them with retry-safe store state.
+10. **Operator actions** expose paged session, audit, policy, rate and metrics services.
+11. **Analytics tools** collect process and bot status, summarize points and generate SVG or table output.
+12. **Telemetry hooks** map action spans and metrics to the backend selected by the application.
 
-The component diagram is in [`uml/components.mmd`](./uml/components.mmd).
+## Reliable write boundary
 
-## Action order
-
-The default order for an unsafe authenticated request is:
-
-1. Resolve and, when due, rotate the session.
-2. Check the exact request origin.
-3. Validate the CSRF token against the session hash.
-4. Parse input.
-5. Resolve the protected resource.
-6. Apply maintenance and block policies.
-7. Apply the action rate limit.
-8. Run application or Discord authorization.
-9. Reserve the idempotency key.
-10. Acquire the resource lock.
-11. Run the operation under one deadline.
-12. Complete the idempotency record before non-transactional follow-up work.
-13. Invalidate cache tags.
-14. Enqueue or publish realtime events.
-15. Write the audit event.
-16. Release the lock.
-
-See [`uml/action-sequence.mmd`](./uml/action-sequence.mmd).
-
-## Transaction boundary
-
-GuildGate cannot create a transaction for an unknown database driver. The action’s `execute()` function owns the database transaction.
-
-For a setting write, the application should place these changes in one transaction where possible:
-
-- Read or compare the current revision.
-- Write the new setting record.
-- Write the application’s domain audit record if it must be atomic with the setting.
-- Write a durable outbox row.
-
-GuildGate’s general audit store runs after `execute()`. Use `audit.failClosedActions` only when refusing the response after an audit failure is useful. It cannot undo a transaction that has already committed. A high-risk operation that requires atomic audit must write its domain audit inside `execute()`.
+When a transaction adapter is configured, action work and outbox enqueue can use the same transaction context. Optimistic revision and fencing checks still belong in the durable write statement. Cache invalidation and general audit handling may happen after commit and cannot roll the domain change back.
 
 ## Consistency choices
 
-- **Session and OAuth state:** consistent, single-use, fail closed.
-- **Idempotency and distributed locks:** atomic store operations are required for multiple instances.
-- **Guild display data:** short cache duration is acceptable.
-- **Permission-sensitive writes:** use live Discord checks or a bot gateway cache that is invalidated by member and role events.
-- **Audit and outbox:** durable storage is recommended.
-- **Realtime delivery:** an event may be delivered after commit. Use an outbox when delivery must survive process restarts.
+- session and OAuth state consumption must fail closed
+- idempotency, lease acquisition and outbox claims must be atomic in multi-instance deployments
+- permission-sensitive writes should use live Discord data or a cache invalidated by gateway events
+- metrics and read caches may use weaker consistency
+- durable audit and outbox records need retention and backups
 
-## Failure policy
+## Diagrams
 
-The kernel fails closed when it cannot establish authentication, CSRF validity, origin validity, a block policy, a required rate limit, authorization, idempotency ownership, or a resource lock.
-
-The application chooses what to do when cache, audit, or realtime delivery fails. Current action behavior is:
-
-- Cache invalidation, realtime publication, and outbox enqueue failures are returned as `meta.postCommitIssues`; the committed operation is not repeated.
-- General audit failure is also reported as a post-commit issue. It fails the response only when the action name is in `audit.failClosedActions`.
-- An audit fail-closed action must use idempotency so a client retry cannot repeat an operation that may already be committed.
-
-A production adapter can add retries, queues, or driver-specific handling around these interfaces.
-
-## Trust boundaries
-
-- The browser is untrusted.
-- Route parameters, body fields, headers, locale values, and channel names are untrusted.
-- OAuth access does not grant bot permissions.
-- A cached guild list is not permanent authorization.
-- A reverse proxy header is trusted only when the application has configured the proxy chain.
-- Store implementations are trusted code and must preserve atomic semantics stated by their interfaces.
-- Realtime transport libraries are responsible for TLS termination and frame parsing. The GuildGate hub starts after the transport accepts a connection.
+- `docs/uml/components.mmd`
+- `docs/uml/action-sequence.mmd`
+- `docs/uml/transaction-sequence.mmd`
+- `docs/uml/realtime-sequence.mmd`
+- `docs/uml/analytics-components.mmd`

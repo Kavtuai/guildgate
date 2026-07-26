@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ActionContext, ActionDefinition, DefinedAction } from "./action.js";
 import { CacheManager } from "./cache.js";
-import { randomToken, redactValue, sha256, stableStringify } from "./crypto.js";
+import { hmacSha256, redactValue, sha256, stableStringify } from "./crypto.js";
 import { asGuildGateError, errors, GuildGateError } from "./errors.js";
 import { messageFor, resolveLocale } from "./i18n.js";
-import { runWithDeadline } from "./resilience.js";
+import { CircuitBreaker, runWithDeadline } from "./resilience.js";
+import { DistributedLockManager, type HeldLock } from "./locks.js";
+import { assertOptimisticRevision, type TransactionAdapter, type TransactionScope } from "./transactions.js";
+import type { TelemetryHooks, TelemetrySpan } from "./telemetry.js";
 import {
   assertAllowedOrigin,
   createCsrfService,
@@ -13,6 +16,7 @@ import {
   serializeSessionCookie,
   validateAllowedOrigins,
   validateCookieConfig,
+  parseHttpMethod,
   type CookieConfig,
 } from "./security.js";
 import { SessionManager } from "./session.js";
@@ -61,6 +65,8 @@ export interface GuildGateConfig {
   };
   stores: GuildGateStores;
   realtime?: RealtimePublisher;
+  transactions?: TransactionAdapter;
+  telemetry?: TelemetryHooks;
   audit?: {
     enabled?: boolean;
     redactKeys?: string[];
@@ -128,6 +134,8 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     ...(config.audit?.redactKeys ?? []).map((key) => key.toLowerCase()),
   ]);
   const auditFailClosed = new Set(config.audit?.failClosedActions ?? []);
+  const lockManager = new DistributedLockManager(config.stores.locks);
+  const circuitBreakers = new Map<string, CircuitBreaker>();
 
   async function executeAction<I, O>(
     action: DefinedAction<I, O>,
@@ -144,12 +152,14 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     let resource: ResourceRef | undefined;
     let parsedInput!: I;
     let rateLimitMeta: RateLimitHitResult | undefined;
-    let lockKey: string | undefined;
-    let lockToken: string | undefined;
+    let heldLock: HeldLock | undefined;
     let idempotencyStoreKey: string | undefined;
     let idempotencyCompleted = false;
     const postCommitIssues: ActionExecutionMeta["postCommitIssues"] = [];
-    let contextBase: Omit<ActionContext, "signal"> | undefined;
+    let contextBase: Omit<ActionContext, "signal" | "attempt" | "transaction" | "fencingToken"> | undefined;
+    let telemetrySpan: TelemetrySpan | undefined;
+    let retryCount = 0;
+    let transactionalOutboxEnqueued = false;
 
     const meta = (): ActionExecutionMeta => ({
       requestId,
@@ -172,7 +182,10 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
         if (authMode === "required" && !session) throw errors.authenticationRequired();
       }
 
-      if (isUnsafeMethod(request.method)) {
+      const requestMethod = parseHttpMethod(String(request.method));
+      request = { ...request, method: requestMethod };
+
+      if (isUnsafeMethod(requestMethod)) {
         assertAllowedOrigin(request.origin ?? firstHeader(request.headers, "origin"), origins);
         const csrfMode = definition.csrf ?? (authMode === "none" ? "disabled" : "required");
         const csrfToken = request.csrfToken ?? firstHeader(request.headers, "x-csrf-token");
@@ -247,26 +260,92 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
         }
       }
 
+      if (definition.optimistic) await assertOptimisticRevision(definition.optimistic, parsedInput);
+
       if (definition.concurrency) {
-        lockKey = `guildgate:lock:${definition.concurrency.key(contextBase, parsedInput)}`;
-        lockToken = randomToken(18);
-        const acquired = await config.stores.locks.acquire(
-          lockKey,
-          lockToken,
-          definition.concurrency.ttlMs ?? Math.max(5_000, definition.timeoutMs ?? 8_000),
-          definition.concurrency.waitMs ?? 0,
-        );
-        if (!acquired) throw errors.lockUnavailable();
+        heldLock = await lockManager.acquire({
+          key: `guildgate:lock:${definition.concurrency.key(contextBase, parsedInput)}`,
+          ttlMs: definition.concurrency.ttlMs ?? Math.max(5_000, definition.timeoutMs ?? 8_000),
+          waitMs: definition.concurrency.waitMs ?? 0,
+          renewEveryMs: definition.concurrency.renewEveryMs,
+        });
       }
+
+      telemetrySpan = config.telemetry?.startAction?.({
+        action: definition.name,
+        requestId,
+        method: request.method,
+        path: request.path,
+        userId: session?.userId,
+        resourceType: resource?.type,
+        resourceId: resource?.id,
+      });
 
       const deadlineInput: {
         timeoutMs: number;
         parentSignal?: AbortSignal;
-        execute: (signal: AbortSignal) => Promise<O>;
+        retry?: NonNullable<ActionDefinition<I, O>["retry"]>;
+        execute: (signal: AbortSignal, attempt: number) => Promise<O>;
       } = {
         timeoutMs: definition.timeoutMs ?? 8_000,
-        execute: (signal) => definition.execute({ ...contextBase!, signal }, parsedInput),
+        execute: async (deadlineSignal, attempt) => {
+          retryCount = Math.max(retryCount, attempt - 1);
+          const signal = combineSignals(deadlineSignal, heldLock?.signal);
+          const executeWithinTransaction = async (transaction?: TransactionScope): Promise<O> => {
+            const scope = transaction ?? createNoopTransactionScope();
+            if (transaction && definition.transaction?.hooks?.afterRollback) {
+              transaction.afterRollback((error) => definition.transaction!.hooks!.afterRollback!(error, parsedInput));
+            }
+            await definition.transaction?.hooks?.before?.(scope, parsedInput);
+            const result = await definition.execute({
+              ...contextBase!,
+              signal,
+              attempt,
+              transaction,
+              fencingToken: heldLock?.lease.fencingToken,
+            }, parsedInput);
+            heldLock?.assertOwned();
+            if (definition.realtime?.delivery === "outbox") {
+              const events = buildRealtimeEvents(definition, result, parsedInput, clock.now());
+              for (const event of events) {
+                await config.stores.outbox.enqueue({ id: event.id, event, createdAt: event.timestamp, attempts: 0 });
+              }
+              transactionalOutboxEnqueued = true;
+            }
+            await definition.transaction?.hooks?.beforeCommit?.(scope, result, parsedInput);
+            if (transaction && definition.transaction?.hooks?.afterCommit) {
+              transaction.afterCommit(() => definition.transaction!.hooks!.afterCommit!(result, parsedInput));
+            }
+            return result;
+          };
+
+          const invoke = async () => {
+            if (definition.transaction) {
+              if (!config.transactions) {
+                if (definition.transaction.required !== false) throw errors.configuration(`Action ${definition.name} requires a transaction adapter`);
+                const result = await executeWithinTransaction();
+                await definition.transaction.hooks?.afterCommit?.(result, parsedInput);
+                return result;
+              }
+              return config.transactions.run(definition.transaction, executeWithinTransaction);
+            }
+            return executeWithinTransaction();
+          };
+
+          if (!definition.circuitBreaker) return invoke();
+          const breakerName = definition.circuitBreaker.name ?? definition.name;
+          let breaker = circuitBreakers.get(breakerName);
+          if (!breaker) {
+            breaker = new CircuitBreaker({
+              failureThreshold: definition.circuitBreaker.failureThreshold,
+              resetAfterMs: definition.circuitBreaker.resetAfterMs,
+            });
+            circuitBreakers.set(breakerName, breaker);
+          }
+          return breaker.run(breakerName, invoke);
+        },
       };
+      if (definition.retry) deadlineInput.retry = definition.retry;
       if (request.signal) deadlineInput.parentSignal = request.signal;
       const result = await runWithDeadline(deadlineInput);
 
@@ -291,15 +370,12 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
 
       try {
         if (definition.realtime) {
-          const events: RealtimeEvent[] = definition.realtime.events(result, parsedInput).map((event) => ({
-            ...event,
-            version: 1,
-            id: randomUUID(),
-            timestamp: clock.now().toISOString(),
-          }));
+          const events = buildRealtimeEvents(definition, result, parsedInput, clock.now());
           for (const event of events) {
             if (definition.realtime.delivery === "outbox") {
-              await config.stores.outbox.enqueue({ id: event.id, event, createdAt: event.timestamp, attempts: 0 });
+              if (!transactionalOutboxEnqueued) {
+                await config.stores.outbox.enqueue({ id: event.id, event, createdAt: event.timestamp, attempts: 0 });
+              }
             } else if (config.realtime) {
               await config.realtime.publish(event);
             }
@@ -323,13 +399,23 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
         if (auditFailClosed.has(definition.name)) throw auditError;
       }
 
+      await config.telemetry?.actionFinished?.({
+        action: definition.name,
+        requestId,
+        ok: true,
+        durationMs: Date.now() - startedAt,
+        status: 200,
+        retryCount,
+      });
+      telemetrySpan?.setAttribute("guildgate.retry_count", retryCount);
+      telemetrySpan?.end();
       return { ok: true, data: result, meta: meta() };
     } catch (unknownError) {
       if (idempotencyStoreKey && !idempotencyCompleted) {
         await config.stores.idempotency.fail(idempotencyStoreKey).catch(() => undefined);
       }
       const error = asGuildGateError(unknownError);
-      const fallbackContext: Omit<ActionContext, "signal"> = contextBase ?? {
+      const fallbackContext: Omit<ActionContext, "signal" | "attempt" | "transaction" | "fencingToken"> = contextBase ?? {
         requestId,
         request,
         locale,
@@ -349,6 +435,19 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
         durationMs: Date.now() - startedAt,
       }).catch(() => undefined);
 
+      telemetrySpan?.recordException(unknownError);
+      telemetrySpan?.setAttribute("error.type", error.code);
+      telemetrySpan?.end();
+      await Promise.resolve(config.telemetry?.actionFinished?.({
+        action: definition.name,
+        requestId,
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        status: error.status,
+        errorCode: error.code,
+        retryCount,
+      })).catch(() => undefined);
+
       return {
         ok: false,
         error: {
@@ -358,19 +457,19 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
             : config.locale?.messages?.[locale]?.[error.code] ?? messageFor(error.code, locale),
           status: error.status,
           retryable: error.retryable,
-          details: error.details,
+          details: error.expose && error.details
+            ? redactValue(error.details, sensitiveKeys) as Record<string, unknown>
+            : undefined,
         },
         meta: meta(),
       };
     } finally {
-      if (lockKey && lockToken) {
-        await config.stores.locks.release(lockKey, lockToken).catch(() => undefined);
-      }
+      await heldLock?.release().catch(() => undefined);
     }
   }
 
   async function enforcePolicies(
-    context: Omit<ActionContext, "signal">,
+    context: Omit<ActionContext, "signal" | "attempt" | "transaction" | "fencingToken">,
     resource: ResourceRef | undefined,
   ): Promise<void> {
     const maintenance = await config.stores.policies.getMaintenance();
@@ -394,7 +493,7 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
 
   async function writeAudit<I, O>(input: {
     definition: ActionDefinition<I, O>;
-    context: Omit<ActionContext, "signal">;
+    context: Omit<ActionContext, "signal" | "attempt" | "transaction" | "fencingToken">;
     resource?: ResourceRef;
     result: AuditEvent["result"];
     reasonCode?: string;
@@ -405,9 +504,9 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     const policyVersion = await config.stores.policies.getPolicyVersion();
     const metadata: AuditEvent["metadata"] = { durationMs: input.durationMs };
     if (input.context.request.ip) {
-      metadata.ipHash = sha256(`${config.security.auditIpSalt}:${input.context.request.ip}`);
+      metadata.ipHash = hmacSha256(config.security.auditIpSalt, input.context.request.ip);
     }
-    if (input.context.request.userAgent) metadata.userAgent = input.context.request.userAgent;
+    if (input.context.request.userAgent) metadata.userAgent = input.context.request.userAgent.slice(0, 512);
 
     await config.stores.audit.write({
       id: randomUUID(),
@@ -437,11 +536,8 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     cookie,
     csrf,
     action<I, O>(definition: ActionDefinition<I, O>): DefinedAction<I, O> {
-      if (!definition.name.trim()) throw errors.configuration("Action names cannot be empty");
-      if (auditFailClosed.has(definition.name) && !definition.idempotency) {
-        throw errors.configuration(`Audit fail-closed action ${definition.name} must use idempotency`);
-      }
-      return Object.freeze({ definition });
+      validateActionDefinition(definition, auditFailClosed);
+      return Object.freeze({ definition: Object.freeze({ ...definition }) });
     },
     execute: executeAction,
     async createSession(input) {
@@ -489,8 +585,12 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
 function validateConfig(config: GuildGateConfig): void {
   if (!config.app.name.trim()) throw errors.configuration("app.name is required");
   const baseUrl = new URL(config.app.baseUrl);
-  if (config.app.environment === "production" && baseUrl.protocol !== "https:") {
-    throw errors.configuration("app.baseUrl must use HTTPS in production");
+  if (baseUrl.username || baseUrl.password) throw errors.configuration("app.baseUrl cannot contain credentials");
+  if (config.app.environment === "production") {
+    if (baseUrl.protocol !== "https:") throw errors.configuration("app.baseUrl must use HTTPS in production");
+    if (["localhost", "127.0.0.1", "::1"].includes(baseUrl.hostname)) {
+      throw errors.configuration("app.baseUrl cannot point to localhost in production");
+    }
   }
   if (Buffer.byteLength(config.security.auditIpSalt) < 16) {
     throw errors.configuration("auditIpSalt must contain at least 16 bytes");
@@ -499,15 +599,69 @@ function validateConfig(config: GuildGateConfig): void {
   if (session.ttlMs <= 0 || session.idleTimeoutMs <= 0 || session.rotateAfterMs <= 0) {
     throw errors.configuration("Session timeouts must be positive");
   }
-  if (session.maximumSessionsPerUser < 1) {
-    throw errors.configuration("maximumSessionsPerUser must be at least 1");
+  if (session.maximumSessionsPerUser < 1 || !Number.isInteger(session.maximumSessionsPerUser)) {
+    throw errors.configuration("maximumSessionsPerUser must be a positive integer");
   }
+  if (session.idleTimeoutMs > session.ttlMs) throw errors.configuration("idleTimeoutMs cannot exceed ttlMs");
+  if (session.rotateAfterMs > session.ttlMs) throw errors.configuration("rotateAfterMs cannot exceed ttlMs");
   if (config.app.environment === "production" && config.security.cookie?.secure === false) {
     throw errors.configuration("Secure session cookies cannot be disabled in production");
+  }
+}
+
+function validateActionDefinition<I, O>(definition: ActionDefinition<I, O>, auditFailClosed: Set<string>): void {
+  if (!definition.name.trim() || definition.name.length > 160 || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(definition.name)) {
+    throw errors.configuration("Action names must use 1-160 letters, numbers, dots, colons, underscores or hyphens");
+  }
+  if (definition.timeoutMs !== undefined && (!Number.isFinite(definition.timeoutMs) || definition.timeoutMs < 1)) {
+    throw errors.configuration(`Action ${definition.name} has an invalid timeoutMs`);
+  }
+  if (definition.rateLimit && (definition.rateLimit.limit < 1 || definition.rateLimit.windowMs < 1 || (definition.rateLimit.cost ?? 1) < 1)) {
+    throw errors.configuration(`Action ${definition.name} has an invalid rate limit`);
+  }
+  if (definition.idempotency && definition.idempotency.ttlMs < 1) {
+    throw errors.configuration(`Action ${definition.name} has an invalid idempotency ttlMs`);
+  }
+  if (definition.concurrency) {
+    const ttl = definition.concurrency.ttlMs ?? Math.max(5_000, definition.timeoutMs ?? 8_000);
+    if (ttl < 100 || (definition.concurrency.waitMs ?? 0) < 0) throw errors.configuration(`Action ${definition.name} has an invalid concurrency policy`);
+    if (definition.concurrency.renewEveryMs !== undefined && (definition.concurrency.renewEveryMs < 50 || definition.concurrency.renewEveryMs >= ttl)) {
+      throw errors.configuration(`Action ${definition.name} renewEveryMs must be at least 50ms and lower than the lock ttl`);
+    }
+  }
+  if (definition.retry && (definition.retry.attempts < 1 || definition.retry.baseDelayMs < 0 || definition.retry.maximumDelayMs < definition.retry.baseDelayMs)) {
+    throw errors.configuration(`Action ${definition.name} has an invalid retry policy`);
+  }
+  if (auditFailClosed.has(definition.name) && !definition.idempotency) {
+    throw errors.configuration(`Audit fail-closed action ${definition.name} must use idempotency`);
   }
 }
 
 function firstHeader(headers: RequestEnvelope["headers"], name: string): string | undefined {
   const value = headers?.[name] ?? headers?.[name.toLowerCase()] ?? headers?.[name.toUpperCase()];
   return Array.isArray(value) ? value[0] : value;
+}
+
+
+function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined): AbortSignal {
+  return secondary ? AbortSignal.any([primary, secondary]) : primary;
+}
+
+function createNoopTransactionScope(): TransactionScope {
+  return {
+    id: "none",
+    backend: "none",
+    metadata: Object.freeze({}),
+    afterCommit: () => undefined,
+    afterRollback: () => undefined,
+  };
+}
+
+function buildRealtimeEvents<I, O>(definition: ActionDefinition<I, O>, result: O, input: I, now: Date): RealtimeEvent[] {
+  return definition.realtime?.events(result, input).map((event) => ({
+    ...event,
+    version: 1,
+    id: randomUUID(),
+    timestamp: now.toISOString(),
+  })) ?? [];
 }

@@ -1,6 +1,6 @@
 # Research notes
 
-Reviewed on 25 July 2026.
+Reviewed on 26 July 2026.
 
 ## Writing review
 
@@ -59,3 +59,20 @@ npm trusted publishing uses OIDC from a supported CI provider instead of a long-
 The included release workflow grants `id-token: write`, runs tests, and publishes on a GitHub release. The npm package page must first be configured to trust the repository and workflow.
 
 Source: https://docs.npmjs.com/trusted-publishers
+
+## Adapter and delivery references
+
+The Hono adapter follows Hono's handler model and returns the web-standard `Response` object instead of importing Hono at runtime.
+
+PostgreSQL outbox claims use a transaction and `FOR UPDATE SKIP LOCKED`. PostgreSQL documents `SKIP LOCKED` as useful for queue-like consumers where workers should avoid waiting on rows already claimed by another transaction.
+
+The generic WebSocket adapter keeps network ownership in the application. A `ws` integration can use protocol ping and pong frames for transport liveness while GuildGate separately checks session validity and subscription authorization.
+
+OpenTelemetry support is a bridge rather than a runtime dependency. The application supplies the API objects or its own telemetry hook, so exporter choice and SDK lifecycle stay in the host process.
+
+Sources:
+
+- https://hono.dev/docs/api/hono
+- https://www.postgresql.org/docs/current/sql-select.html
+- https://github.com/websockets/ws
+- https://opentelemetry.io/docs/languages/js/instrumentation/
