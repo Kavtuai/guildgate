@@ -7,12 +7,12 @@
   "author": "kavtuai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kavtuai/guildgate.git"
+    "url": "git+https://github.com/Kavtuai/guildgate.git"
   },
   "bugs": {
-    "url": "https://github.com/kavtuai/guildgate/issues"
+    "url": "https://github.com/Kavtuai/guildgate/issues"
   },
-  "homepage": "https://github.com/kavtuai/guildgate#readme",
+  "homepage": "https://github.com/Kavtuai/guildgate#readme",
   "keywords": [
     "discord",
     "dashboard",
@@ -68,8 +68,8 @@
     }
   },
   "bin": {
-    "guildgate-doctor": "./bin/guildgate-doctor.mjs",
-    "guildgate-writing-check": "./bin/guildgate-writing-check.mjs"
+    "guildgate-doctor": "bin/guildgate-doctor.mjs",
+    "guildgate-writing-check": "bin/guildgate-writing-check.mjs"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
