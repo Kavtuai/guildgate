@@ -36,6 +36,7 @@ All notable changes are recorded here. Semantic Versioning applies from `1.0.0`.
 
 ### Testing and operations
 
+- Kept the awaited deadline timer referenced until settlement, preventing Node.js 22 from cancelling pending timeout operations.
 - Replaced the idempotency-renewal timing assertion with a controlled execution gate and bounded replay polling instead of relying on one exact timer boundary.
 - Serialized native coverage test-file execution with `--test-concurrency=1` so instrumentation does not distort lease-renewal timing.
 - Expanded deterministic coverage from 39 tests in 1.0.0 to 76 passing tests in 1.1.0, with two live-service tests enabled in CI.
