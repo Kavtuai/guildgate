@@ -1,6 +1,6 @@
 # Araştırma notları
 
-İnceleme tarihi: 25 Temmuz 2026.
+İnceleme tarihi: 26 Temmuz 2026.
 
 ## Yazım kontrolü
 
@@ -39,3 +39,20 @@ Kaynaklar:
 npm trusted publishing, desteklenen CI sağlayıcısından OIDC kullanır ve uzun süreli yayın tokenı ihtiyacını kaldırır. Paketteki GitHub release workflow’u testlerden sonra `id-token: write` izniyle npm yayını yapacak şekilde hazırlanmıştır. npm tarafında depo ve workflow güven ilişkisi önceden tanımlanmalıdır.
 
 Kaynak: https://docs.npmjs.com/trusted-publishers
+
+## Adapter ve teslim kaynakları
+
+Hono adapteri, çalışma zamanında Hono import etmek yerine Hono handler modeline uygun web-standardı `Response` döndürür.
+
+PostgreSQL outbox claim işlemleri transaction ve `FOR UPDATE SKIP LOCKED` kullanır. PostgreSQL belgeleri `SKIP LOCKED` seçeneğini, worker'ların başka transaction tarafından alınmış satırları beklemediği kuyruk benzeri tüketim için açıklar.
+
+Genel WebSocket adapterinde ağ bağlantısının sahibi uygulamadır. `ws` bağlantısı transport canlılığı için ping/pong kullanabilir; GuildGate session geçerliliğini ve kanal yetkisini ayrıca kontrol eder.
+
+OpenTelemetry desteği çalışma zamanı bağımlılığı değil, köprü sözleşmesidir. API nesneleri veya özel telemetry hook uygulama tarafından verilir; exporter ve SDK yaşam döngüsü ana uygulamada kalır.
+
+Kaynaklar:
+
+- https://hono.dev/docs/api/hono
+- https://www.postgresql.org/docs/current/sql-select.html
+- https://github.com/websockets/ws
+- https://opentelemetry.io/docs/languages/js/instrumentation/

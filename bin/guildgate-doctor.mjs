@@ -7,7 +7,7 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log([
     "Usage: guildgate-doctor [options]",
     "",
-    "Checks the GuildGate environment and production safety settings.",
+    "Checks GuildGate security, storage, analytics and production settings.",
     "",
     "Options:",
     "  --json      Print machine-readable JSON output.",
@@ -57,6 +57,15 @@ if (environment === "production") {
       check(`Origin is a valid URL: ${origin}`, false, "invalid URL");
     }
   }
+}
+
+
+if (process.env.GUILDGATE_POSTGRES_URL) {
+  checkUrl("PostgreSQL URL is valid", process.env.GUILDGATE_POSTGRES_URL, false);
+}
+if (process.env.GUILDGATE_ANALYTICS_RETENTION_DAYS) {
+  const days = Number(process.env.GUILDGATE_ANALYTICS_RETENTION_DAYS);
+  check("Analytics retention is a positive number", Number.isFinite(days) && days > 0, `${days} days`);
 }
 
 if (isJson) {

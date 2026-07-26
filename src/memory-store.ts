@@ -22,6 +22,7 @@ interface RateBucket {
 interface LockEntry {
   token: string;
   expiresAtMs: number;
+  fencingToken: number;
 }
 
 export interface MemoryStoreBundle extends GuildGateStores {
@@ -44,8 +45,10 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
   const locks = new Map<string, LockEntry>();
   const audit: AuditEvent[] = [];
   const outbox: OutboxRecord[] = [];
+  const outboxClaims = new Map<string, { workerId: string; expiresAtMs: number }>();
   const blocks = new Map<string, BlockRecord>();
   let policyVersion = 1;
+  let fencingToken = 0;
   let maintenance: MaintenanceState = {
     enabled: false,
     allowOwners: true,
@@ -186,18 +189,29 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
 
     locks: {
       async acquire(key, token, ttlMs, waitMs) {
+        return Boolean(await this.acquireLease?.(key, token, ttlMs, waitMs));
+      },
+      async acquireLease(key, token, ttlMs, waitMs) {
         const deadline = Date.now() + Math.max(0, waitMs);
         do {
           const now = Date.now();
           const current = locks.get(key);
           if (!current || current.expiresAtMs <= now) {
-            locks.set(key, { token, expiresAtMs: now + ttlMs });
-            return true;
+            fencingToken += 1;
+            const entry = { token, expiresAtMs: now + ttlMs, fencingToken };
+            locks.set(key, entry);
+            return { key, token, fencingToken: entry.fencingToken, expiresAtMs: entry.expiresAtMs };
           }
-          if (waitMs <= 0) return false;
+          if (waitMs <= 0) return null;
           await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - now))));
         } while (Date.now() <= deadline);
-        return false;
+        return null;
+      },
+      async renew(key, token, ttlMs) {
+        const current = locks.get(key);
+        if (!current || current.token !== token || current.expiresAtMs <= Date.now()) return false;
+        current.expiresAtMs = Date.now() + ttlMs;
+        return true;
       },
       async release(key, token) {
         const current = locks.get(key);
@@ -223,11 +237,24 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
         outbox.push(structuredClone(record));
       },
       async next(limit) {
-        return outbox.filter((row) => !row.publishedAt).slice(0, limit).map((row) => structuredClone(row));
+        const now = Date.now();
+        return outbox
+          .filter((row) => !row.publishedAt && (outboxClaims.get(row.id)?.expiresAtMs ?? 0) <= now)
+          .slice(0, limit)
+          .map((row) => structuredClone(row));
+      },
+      async claim(limit, workerId, leaseMs) {
+        const now = Date.now();
+        const rows = outbox
+          .filter((row) => !row.publishedAt && (outboxClaims.get(row.id)?.expiresAtMs ?? 0) <= now)
+          .slice(0, limit);
+        for (const row of rows) outboxClaims.set(row.id, { workerId, expiresAtMs: now + leaseMs });
+        return rows.map((row) => structuredClone(row));
       },
       async markPublished(id, publishedAt) {
         const row = outbox.find((item) => item.id === id);
         if (row) row.publishedAt = publishedAt;
+        outboxClaims.delete(id);
       },
       async markFailed(id, error) {
         const row = outbox.find((item) => item.id === id);
@@ -235,6 +262,7 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
           row.attempts += 1;
           row.lastError = error;
         }
+        outboxClaims.delete(id);
       },
     },
 
@@ -259,6 +287,11 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
       },
       async removeBlock(subjectType, subjectId) {
         blocks.delete(blockKey(subjectType, subjectId));
+      },
+      async listBlocks(filter) {
+        let rows = [...blocks.values()];
+        if (filter?.subjectType) rows = rows.filter((row) => row.subjectType === filter.subjectType);
+        return rows.slice(0, filter?.limit ?? 100).map((row) => structuredClone(row));
       },
       async getPolicyVersion() {
         return policyVersion;
@@ -288,8 +321,10 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
       locks.clear();
       audit.length = 0;
       outbox.length = 0;
+      outboxClaims.clear();
       blocks.clear();
       policyVersion = 1;
+      fencingToken = 0;
       maintenance = { enabled: false, allowOwners: true, updatedAt: new Date(0).toISOString() };
     },
   };

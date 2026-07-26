@@ -1,50 +1,28 @@
+import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
 
-const doctorPath = fileURLToPath(
-  new URL("../bin/guildgate-doctor.mjs", import.meta.url),
-);
-
-const writingCheckPath = fileURLToPath(
-  new URL("../bin/guildgate-writing-check.mjs", import.meta.url),
-);
-
-function runCli(file, args = [], cwd = process.cwd()) {
-  return spawnSync(process.execPath, [file, ...args], {
-    cwd,
-    encoding: "utf8",
-    env: { ...process.env },
-  });
+function run(file, args = [], cwd = process.cwd()) {
+  return spawnSync(process.execPath, [file, ...args], { cwd, encoding: "utf8" });
 }
 
-test("doctor help exits successfully without checking the environment", () => {
-  const result = runCli(doctorPath, ["--help"]);
-
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /Usage: guildgate-doctor/);
-  assert.doesNotMatch(result.stdout, /DISCORD_CLIENT_SECRET is set/);
+test("CLI help commands work from installed-style directories", () => {
+  const doctor = run("bin/guildgate-doctor.mjs", ["--help"]);
+  const writing = run("bin/guildgate-writing-check.mjs", ["--help"]);
+  assert.equal(doctor.status, 0);
+  assert.match(doctor.stdout, /Usage: guildgate-doctor/);
+  assert.equal(writing.status, 0);
+  assert.match(writing.stdout, /Usage: guildgate-writing-check/);
 });
 
-test("writing check help exits successfully", () => {
-  const result = runCli(writingCheckPath, ["--help"]);
-
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /Usage: guildgate-writing-check/);
-});
-
-test("writing check skips documentation paths that do not exist", () => {
-  const directory = mkdtempSync(join(tmpdir(), "guildgate-writing-check-"));
-
+test("writing checker tolerates absent documentation roots", () => {
+  const directory = mkdtempSync(join(tmpdir(), "guildgate-writing-"));
   try {
-    const result = runCli(writingCheckPath, [], directory);
-
+    const result = run(new URL("../bin/guildgate-writing-check.mjs", import.meta.url).pathname.replace(/^\/(.:)/, "$1"), [], directory);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Writing check passed/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

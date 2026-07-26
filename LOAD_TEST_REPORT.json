@@ -1,0 +1,26 @@
+{
+  "package": "@kavtuai/guildgate",
+  "version": "1.0.0",
+  "generatedAt": "2026-07-26T13:30:04.064Z",
+  "runtime": {
+    "node": "v24.12.0",
+    "platform": "win32",
+    "architecture": "x64",
+    "cpuCount": 8
+  },
+  "scenario": "in-memory guarded writes with unique idempotency keys and shared resource locks",
+  "concurrency": 16,
+  "operations": 5000,
+  "domainExecutions": 5000,
+  "failures": 0,
+  "durationMs": 590.8743,
+  "throughputPerSecond": 8462.036680221157,
+  "p50Ms": 1.7364000000000033,
+  "p95Ms": 2.739599999999996,
+  "p99Ms": 6.2442999999999955,
+  "limitations": [
+    "No network, Redis, PostgreSQL or Discord request is included.",
+    "Numbers are useful for regression comparison on the same class of machine.",
+    "This report is not a production capacity promise."
+  ]
+}

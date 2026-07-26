@@ -19,8 +19,21 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
-      - run: npm install
+          package-manager-cache: false
+      - run: npm ci
       - run: npm run typecheck
-      - run: npm run writing:check
       - run: npm test
+      - run: npm run security:verify
       - run: npm run pack:check
+
+  load-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:load

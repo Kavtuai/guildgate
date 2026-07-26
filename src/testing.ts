@@ -1,9 +1,14 @@
+import { MemoryAnalyticsStore } from "./analytics/store.js";
+import { runStoreContract } from "./contracts.js";
 import { createMemoryStoreBundle } from "./memory-store.js";
 import { createGuildGate, type GuildGateConfig } from "./kernel.js";
+import { createMemoryTransactionAdapter } from "./transactions.js";
 import type { SupportedLocale } from "./types.js";
 
 export function createGuildGateTestHarness(overrides?: Partial<GuildGateConfig>) {
   const stores = createMemoryStoreBundle();
+  const analytics = new MemoryAnalyticsStore();
+  const transactions = overrides?.transactions ?? createMemoryTransactionAdapter();
   const defaultSecurity: GuildGateConfig["security"] = {
     allowedOrigins: ["http://localhost:3000"],
     csrfSecret: "test-csrf-secret-that-is-long-enough-123456",
@@ -33,6 +38,8 @@ export function createGuildGateTestHarness(overrides?: Partial<GuildGateConfig>)
     },
     stores: overrides?.stores ?? stores,
     realtime: overrides?.realtime,
+    transactions,
+    telemetry: overrides?.telemetry,
     audit: overrides?.audit,
     clock: overrides?.clock,
   };
@@ -41,6 +48,9 @@ export function createGuildGateTestHarness(overrides?: Partial<GuildGateConfig>)
   return {
     kernel,
     stores: config.stores,
+    analytics,
+    transactions,
+    runStoreContract: () => runStoreContract(() => config.stores),
     async login(userId = "user-1", locale: SupportedLocale = "en") {
       return kernel.createSession({ userId, locale });
     },
@@ -51,6 +61,7 @@ export function createGuildGateTestHarness(overrides?: Partial<GuildGateConfig>)
       csrfToken?: string;
       idempotencyKey?: string;
       locale?: SupportedLocale;
+      signal?: AbortSignal;
     }) {
       return {
         method: input.method ?? "POST",
@@ -63,6 +74,7 @@ export function createGuildGateTestHarness(overrides?: Partial<GuildGateConfig>)
         csrfToken: input.csrfToken,
         idempotencyKey: input.idempotencyKey,
         locale: input.locale ?? "en",
+        signal: input.signal,
       } as const;
     },
   };

@@ -19,20 +19,15 @@ jobs:
     environment: npm
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 24
+          registry-url: https://registry.npmjs.org
           package-manager-cache: false
-
       - run: npm ci
-
       - name: Verify release tag
         run: node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v' + v) { console.error('Tag and package version differ'); process.exit(1) }"
-
-      - run: npm test
-
+      - run: npm run release:verify
       - name: Check npm registry
         id: registry
         shell: bash
@@ -45,7 +40,6 @@ jobs:
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Publish package
         if: steps.registry.outputs.published != 'true'
-        run: npm publish --access public
+        run: npm publish --access public --provenance

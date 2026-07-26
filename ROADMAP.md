@@ -1,53 +1,76 @@
-# Release plan
+# Release plan and completion status
 
-The ZIP contains the complete `0.1.0` source, build output, tests, examples, documentation, UML, and release configuration. Later versions below are planned releases, not copied or simulated source trees.
+GuildGate tracks work by public capability. Version `1.0.0` contains the safe-write, realtime, adapter, operator, monitoring and analytics work planned for the first stable contract line.
 
-## 0.1.x: Initial contract stabilization
+## 0.1.x — Core security contracts
 
-- Fix defects found during local Fastify, Express, Discord OAuth, Redis, and custom database integration.
-- Add contract tests that adapter authors can run against their stores.
-- Freeze error codes and document migration rules.
-- Add request cancellation tests for supported clients.
+Completed and published through `0.1.1`:
 
-Exit condition: two example applications pass login, settings write, permission revocation, session revocation, and outbox tests.
+- server-side session lifecycle
+- Discord OAuth state and browser binding
+- exact-origin and CSRF validation
+- application-owned storage interfaces
+- memory and Redis stores
+- Fastify and Express handlers
+- Discord permission helpers
+- audit, cache, rate limit, idempotency and basic outbox behavior
 
-## 0.2.0: Durable adapter set
+## 0.2.0 — Reliable writes
 
-- Official PostgreSQL adapter with migrations and transaction examples.
-- Official MongoDB adapter where equivalent atomic operations are available.
-- Optional SQLite adapter for single-instance tools.
-- Redis lease renewal and a fencing-token option.
-- Outbox row claiming for multiple workers.
+Completed in the `1.0.0` code line:
 
-Exit condition: concurrency tests run against each official adapter in CI.
+- idempotency reservation, replay and payload conflict checks
+- optimistic revision checks
+- transaction adapters with commit and rollback hooks
+- tag-based cache invalidation
+- renewable distributed leases and fencing tokens
+- deadlines, retry policies and circuit breakers
+- owner maintenance and block controls
+- session listing, revocation and owner API actions
 
-## 0.3.0: Realtime transport adapters
+## 0.3.0 — Realtime delivery
 
-- `ws` adapter.
-- Socket.IO adapter.
-- Server-Sent Events adapter for server-to-browser updates.
-- Session revocation broadcast between application instances.
-- Event sequence and resume cursor support.
+Completed in the `1.0.0` code line:
 
-Exit condition: reconnect, revocation, backpressure, and duplicate-delivery tests pass under multiple instances.
+- WebSocket-compatible adapter
+- Socket.IO-compatible adapter
+- Server-Sent Events stream
+- authorization for each channel subscription
+- heartbeat and session revalidation
+- session revocation disconnect and broadcast bus contract
+- byte and queue backpressure limits
+- per-channel event sequences and resume cursors
+- claim-based outbox workers for multiple instances
 
-## 0.4.0: Operator tools
+## 0.4.0 — Ecosystem and operations
 
-- Policy inspection API.
-- Read-only owner console example.
-- Session and audit query helpers with pagination.
-- OpenTelemetry hooks without forcing one telemetry backend.
-- Rate policy inspection and safe reset commands.
+Completed in the `1.0.0` code line:
 
-Exit condition: operator actions are covered by owner authorization, CSRF, rate limits, and audit tests.
+- Fastify, Express and Hono handlers
+- PostgreSQL storage and migration SQL
+- Redis short-lived stores
+- discord.js-compatible adapter
+- memory testing harness and adapter contract runner
+- doctor, writing-check and migration commands
+- OpenTelemetry bridge hooks
+- owner policy, rate policy, audit and session inspection actions
+- server and Discord bot status sampling
+- time-series analytics, summaries, SVG charts and table models
 
-## 1.0.0: Stable public API
+## 1.0.0 — Stable contracts
 
-- External security review or documented independent review process.
-- Stable storage, action, Discord, framework, and realtime contracts.
-- Upgrade guide from all pre-1.0 releases.
-- Load test results and stated operating limits.
-- Supported-version policy and security response targets.
-- No known high-severity issue at release time.
+Completed release gates:
 
-The project will not advertise “zero vulnerabilities” or “bug-free” status. Security statements will describe tested behavior and known limits.
+- stable action, store and realtime contract markers
+- documented migration and deprecation policy
+- threat model and private security response process
+- maintainer security audit with closed release-blocking findings
+- regression coverage for audit findings
+- Node.js 22 and 24 CI targets
+- package, installed-consumer and CLI checks
+- local concurrency and latency harness with stated limits
+- OIDC trusted publishing and npm provenance
+
+An independent assessment is recommended for deployments that need third-party assurance. The handoff scope is in `EXTERNAL_REVIEW_GUIDE.md`. It is not presented as work already performed.
+
+Future minor releases will focus on measured adapter improvements, more live integration fixtures and operational tooling without changing the `1.0` contract line unnecessarily.

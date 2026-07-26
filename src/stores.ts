@@ -53,6 +53,8 @@ export interface IdempotencyStore {
 export interface LockStore {
   acquire(key: string, token: string, ttlMs: number, waitMs: number): Promise<boolean>;
   release(key: string, token: string): Promise<void>;
+  acquireLease?(key: string, token: string, ttlMs: number, waitMs: number): Promise<{ key: string; token: string; fencingToken: number; expiresAtMs: number } | null>;
+  renew?(key: string, token: string, ttlMs: number): Promise<boolean>;
 }
 
 export interface AuditStore {
@@ -63,6 +65,7 @@ export interface AuditStore {
 export interface OutboxStore {
   enqueue(record: OutboxRecord): Promise<void>;
   next(limit: number): Promise<OutboxRecord[]>;
+  claim?(limit: number, workerId: string, leaseMs: number): Promise<OutboxRecord[]>;
   markPublished(id: string, publishedAt: string): Promise<void>;
   markFailed(id: string, error: string): Promise<void>;
 }
@@ -73,6 +76,7 @@ export interface PolicyStore {
   getBlock(subjectType: BlockRecord["subjectType"], subjectId: string, nowIso: string): Promise<BlockRecord | null>;
   putBlock(record: BlockRecord): Promise<void>;
   removeBlock(subjectType: BlockRecord["subjectType"], subjectId: string): Promise<void>;
+  listBlocks?(filter?: { subjectType?: BlockRecord["subjectType"]; limit?: number }): Promise<BlockRecord[]>;
   getPolicyVersion(): Promise<number>;
   bumpPolicyVersion(): Promise<number>;
 }

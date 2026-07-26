@@ -1,6 +1,7 @@
 import type { DefinedAction } from "../action.js";
 import type { GuildGateKernel } from "../kernel.js";
-import type { HttpMethod, RequestEnvelope } from "../types.js";
+import type { RequestEnvelope } from "../types.js";
+import { parseHttpMethod } from "../security.js";
 
 export interface ExpressRequestLike {
   method: string;
@@ -33,7 +34,7 @@ export function createExpressHandler<I, O>(
   return async (request, response, next) => {
     try {
       const envelope: RequestEnvelope = {
-        method: request.method.toUpperCase() as HttpMethod,
+        method: parseHttpMethod(request.method),
         path: request.path || request.originalUrl || "/",
         input: options?.input?.(request) ?? request.body,
         headers: request.headers,

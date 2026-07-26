@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant Browser
+    participant HTTP
+    participant Kernel
+    participant Policy
+    participant Lock
+    participant Transaction
+    participant Database
+    participant Outbox
+
+    Browser->>HTTP: Unsafe request + session + CSRF + idempotency key
+    HTTP->>Kernel: RequestEnvelope
+    Kernel->>Policy: session, origin, CSRF, rate, authorization
+    Policy-->>Kernel: allowed
+    Kernel->>Lock: acquire renewable lease
+    Lock-->>Kernel: lease + fencing token
+    Kernel->>Transaction: begin
+    Transaction->>Database: optimistic update with revision and fencing token
+    Database-->>Transaction: committed row
+    Transaction->>Outbox: enqueue event in same transaction
+    Transaction-->>Kernel: commit
+    Kernel->>Lock: release
+    Kernel-->>HTTP: ActionResult
+    HTTP-->>Browser: JSON + request ID + rate headers
