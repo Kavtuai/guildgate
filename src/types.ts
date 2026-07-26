@@ -134,6 +134,7 @@ export type IdempotencyState = "inflight" | "completed";
 export interface IdempotencyRecord {
   key: string;
   requestHash: string;
+  reservationId?: string;
   state: IdempotencyState;
   response?: unknown;
   createdAtMs: number;
@@ -171,7 +172,7 @@ export interface SessionResolution {
 }
 
 export interface PostCommitIssue {
-  stage: "cache" | "realtime" | "audit";
+  stage: "transaction-hook" | "cache" | "realtime" | "audit";
   code: string;
 }
 

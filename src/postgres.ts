@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { decodeAuditCursor, encodeAuditCursor } from "./audit-pagination.js";
 import type { AnalyticsStore } from "./analytics/store.js";
 import type { MetricPoint, MetricQuery } from "./analytics/types.js";
 import type { LeaseLockStore, LockLease } from "./locks.js";
@@ -16,7 +17,7 @@ import type {
   RateLimitStore,
   SessionStore,
 } from "./stores.js";
-import type { TransactionAdapter, TransactionOptions, TransactionScope } from "./transactions.js";
+import { runPostCommitCallbacks, runRollbackCallbacks, type TransactionAdapter, type TransactionOptions, type TransactionScope } from "./transactions.js";
 import type {
   AuditEvent,
   BlockRecord,
@@ -61,40 +62,99 @@ export function createPostgresAdapter(input: { pool: PgPoolLike; prefix?: string
   if (!/^[a-z][a-z0-9_]{0,40}$/i.test(prefix)) throw new TypeError("PostgreSQL table prefix is invalid");
   const table = (name: string) => `"${prefix}_${name}"`;
   const sequence = `"${prefix}_lock_fencing_seq"`;
-  const txStorage = new AsyncLocalStorage<PgClientLike>();
-  const q = <Row = Record<string, unknown>>(text: string, values?: unknown[]) => (txStorage.getStore() ?? input.pool).query<Row>(text, values);
+  interface TransactionContext {
+    client: PgClientLike;
+    options: TransactionOptions;
+    afterCommit: Array<() => void | Promise<void>>;
+    afterRollback: Array<(error: unknown) => void | Promise<void>>;
+  }
+
+  const txStorage = new AsyncLocalStorage<TransactionContext>();
+  const q = <Row = Record<string, unknown>>(text: string, values?: unknown[]) => (txStorage.getStore()?.client ?? input.pool).query<Row>(text, values);
 
   const transactions: TransactionAdapter = {
     async run<T>(options: TransactionOptions, work: (scope: TransactionScope) => Promise<T>): Promise<T> {
-      const existing = txStorage.getStore();
-      if (existing) return work(createScope(existing, options, "postgres-nested"));
+      const parent = txStorage.getStore();
+      if (parent) return runNestedTransaction(parent, options, work);
+
       const client = await input.pool.connect();
-      const afterCommit: Array<() => void | Promise<void>> = [];
-      const afterRollback: Array<(error: unknown) => void | Promise<void>> = [];
-      const scope = createScope(client, options, "postgres", afterCommit, afterRollback);
+      const context: TransactionContext = { client, options, afterCommit: [], afterRollback: [] };
+      const scope = createScope(client, options, "postgres", context.afterCommit, context.afterRollback);
+      let result!: T;
+      let committed = false;
+
       try {
-        await client.query("BEGIN");
-        if (options.isolation) await client.query(`SET TRANSACTION ISOLATION LEVEL ${isolationSql(options.isolation)}`);
-        if (options.readOnly) await client.query("SET TRANSACTION READ ONLY");
-        if (options.timeoutMs) await client.query("SELECT set_config('statement_timeout', $1, true)", [String(Math.max(1, options.timeoutMs))]);
-        const result = await txStorage.run(client, () => work(scope));
-        await client.query("COMMIT");
-        for (const callback of afterCommit) await callback();
+        try {
+          await client.query("BEGIN");
+          if (options.isolation) await client.query(`SET TRANSACTION ISOLATION LEVEL ${isolationSql(options.isolation)}`);
+          if (options.readOnly) await client.query("SET TRANSACTION READ ONLY");
+          if (options.timeoutMs) await client.query("SELECT set_config('statement_timeout', $1, true)", [String(Math.max(1, options.timeoutMs))]);
+          result = await txStorage.run(context, () => work(scope));
+          await client.query("COMMIT");
+          committed = true;
+        } catch (error) {
+          if (!committed) await client.query("ROLLBACK").catch(() => undefined);
+          await runRollbackCallbacks(context.afterRollback, error);
+          throw error;
+        }
+
+        await runPostCommitCallbacks(context.afterCommit, options, result);
         return result;
-      } catch (error) {
-        await client.query("ROLLBACK").catch(() => undefined);
-        for (const callback of afterRollback) await callback(error);
-        throw error;
       } finally {
         client.release?.();
       }
     },
   };
 
+  async function runNestedTransaction<T>(
+    parent: TransactionContext,
+    options: TransactionOptions,
+    work: (scope: TransactionScope) => Promise<T>,
+  ): Promise<T> {
+    assertNestedOptions(parent.options, options);
+    const savepoint = `guildgate_${randomUUID().replaceAll("-", "")}`;
+    const afterCommit: Array<() => void | Promise<void>> = [];
+    const afterRollback: Array<(error: unknown) => void | Promise<void>> = [];
+    const scope = createScope(parent.client, options, "postgres-savepoint", afterCommit, afterRollback);
+    await parent.client.query(`SAVEPOINT ${savepoint}`);
+    try {
+      const result = await work(scope);
+      await parent.client.query(`RELEASE SAVEPOINT ${savepoint}`);
+      parent.afterCommit.push(...afterCommit);
+      parent.afterRollback.push(...afterRollback);
+      return result;
+    } catch (error) {
+      await parent.client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`).catch(() => undefined);
+      await parent.client.query(`RELEASE SAVEPOINT ${savepoint}`).catch(() => undefined);
+      await runRollbackCallbacks(afterRollback, error);
+      throw error;
+    }
+  }
+
+  function assertNestedOptions(parent: TransactionOptions, nested: TransactionOptions): void {
+    if (nested.isolation && nested.isolation !== (parent.isolation ?? "read-committed")) {
+      throw new TypeError("Nested PostgreSQL transactions cannot change the isolation level");
+    }
+    if (nested.readOnly !== undefined && nested.readOnly !== (parent.readOnly ?? false)) {
+      throw new TypeError("Nested PostgreSQL transactions cannot change readOnly mode");
+    }
+  }
+
   const sessions: SessionStore = {
     async get(idHash) {
       const result = await q<{ record: SessionRecord }>(`SELECT record FROM ${table("sessions")} WHERE id_hash=$1`, [idHash]);
       return result.rows[0]?.record ?? null;
+    },
+    async create(record, maximumSessionsPerUser) {
+      await transactions.run({ name: "session-create" }, async () => {
+        await q("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [record.userId]);
+        await q(`INSERT INTO ${table("sessions")} (id_hash,user_id,last_seen_at,expires_at,record) VALUES ($1,$2,$3,$4,$5::jsonb)
+          ON CONFLICT (id_hash) DO UPDATE SET user_id=EXCLUDED.user_id,last_seen_at=EXCLUDED.last_seen_at,expires_at=EXCLUDED.expires_at,record=EXCLUDED.record`,
+        [record.idHash, record.userId, record.lastSeenAt, record.expiresAt, JSON.stringify(record)]);
+        await q(`DELETE FROM ${table("sessions")} WHERE id_hash IN (
+          SELECT id_hash FROM ${table("sessions")} WHERE user_id=$1 ORDER BY last_seen_at DESC,id_hash DESC OFFSET $2
+        )`, [record.userId, Math.max(1, maximumSessionsPerUser)]);
+      });
     },
     async set(record) {
       await q(`INSERT INTO ${table("sessions")} (id_hash,user_id,last_seen_at,expires_at,record) VALUES ($1,$2,$3,$4,$5::jsonb)
@@ -134,7 +194,10 @@ export function createPostgresAdapter(input: { pool: PgPoolLike; prefix?: string
   const rateLimits: RateLimitStore = {
     async hit(hit) {
       return transactions.run({ name: "rate-limit" }, async () => {
-        const current = await q<{ count: number; reset_at_ms: string }>(`SELECT count, (extract(epoch from reset_at)*1000)::bigint::text AS reset_at_ms FROM ${table("rate_limits")} WHERE key=$1 FOR UPDATE`, [hit.key]);
+        // A row lock cannot protect the first insert because no row exists yet. The
+        // transaction-scoped advisory lock serializes both first-write and update paths.
+        await q("SELECT pg_advisory_xact_lock(hashtextextended($1,1))", [hit.key]);
+        const current = await q<{ count: number; reset_at_ms: string }>(`SELECT count, (extract(epoch from reset_at)*1000)::bigint::text AS reset_at_ms FROM ${table("rate_limits")} WHERE key=$1`, [hit.key]);
         const now = hit.nowMs;
         const cost = hit.cost ?? 1;
         const row = current.rows[0];
@@ -170,6 +233,7 @@ export function createPostgresAdapter(input: { pool: PgPoolLike; prefix?: string
 
   const idempotency: IdempotencyStore = {
     async begin(record) {
+      if (!record.reservationId) throw new TypeError("Idempotency reservations require a reservationId");
       return transactions.run({ name: "idempotency-begin" }, async () => {
         const inserted = await q(`INSERT INTO ${table("idempotency")} (key,expires_at,record) VALUES ($1,to_timestamp($2/1000.0),$3::jsonb)
           ON CONFLICT (key) DO NOTHING RETURNING key`, [record.key, record.expiresAtMs, JSON.stringify(record)]);
@@ -186,37 +250,55 @@ export function createPostgresAdapter(input: { pool: PgPoolLike; prefix?: string
         return { status: "inflight" as const };
       });
     },
-    async complete(key, response, expiresAtMs) {
-      const result = await q<{ record: IdempotencyRecord }>(`SELECT record FROM ${table("idempotency")} WHERE key=$1`, [key]);
-      const current = result.rows[0]?.record;
-      if (!current) return;
-      const record = { ...current, state: "completed" as const, response, expiresAtMs };
-      await q(`UPDATE ${table("idempotency")} SET expires_at=to_timestamp($2/1000.0),record=$3::jsonb WHERE key=$1`, [key, expiresAtMs, JSON.stringify(record)]);
+    async complete(key, response, expiresAtMs, reservationId) {
+      if (!reservationId) return false;
+      const responseJson = JSON.stringify(response === undefined ? null : response);
+      const result = await q(`UPDATE ${table("idempotency")}
+        SET expires_at=to_timestamp($2/1000.0),
+            record=jsonb_set(jsonb_set(jsonb_set(record,'{state}','"completed"'::jsonb,true),'{response}',$3::jsonb,true),'{expiresAtMs}',to_jsonb($2::bigint),true)
+        WHERE key=$1 AND expires_at>now() AND record->>'state'='inflight' AND record->>'reservationId'=$4
+        RETURNING key`, [key, expiresAtMs, responseJson, reservationId]);
+      return (result.rowCount ?? result.rows.length) > 0;
     },
-    async fail(key) { await q(`DELETE FROM ${table("idempotency")} WHERE key=$1`, [key]); },
+    async renew(key, expiresAtMs, reservationId) {
+      if (!reservationId) return false;
+      const result = await q(`UPDATE ${table("idempotency")}
+        SET expires_at=to_timestamp($2/1000.0),
+            record=jsonb_set(record,'{expiresAtMs}',to_jsonb($2::bigint),true)
+        WHERE key=$1 AND expires_at>now() AND record->>'state'='inflight' AND record->>'reservationId'=$3
+        RETURNING key`, [key, expiresAtMs, reservationId]);
+      return (result.rowCount ?? result.rows.length) > 0;
+    },
+    async fail(key, reservationId) {
+      if (!reservationId) return false;
+      const result = await q(`DELETE FROM ${table("idempotency")} WHERE key=$1 AND record->>'state'='inflight' AND record->>'reservationId'=$2`, [key, reservationId]);
+      return (result.rowCount ?? 0) > 0;
+    },
     async get(key) {
       const result = await q<{ record: IdempotencyRecord }>(`SELECT record FROM ${table("idempotency")} WHERE key=$1 AND expires_at>now()`, [key]);
       return result.rows[0]?.record ?? null;
     },
   };
 
+  const acquirePostgresLease: NonNullable<LeaseLockStore["acquireLease"]> = async (key, token, ttlMs, waitMs) => {
+    const deadline = Date.now() + Math.max(0, waitMs);
+    do {
+      const result = await q<{ fencing_token: string; expires_at_ms: string }>(`INSERT INTO ${table("locks")} (key,token,fencing_token,expires_at)
+        VALUES ($1,$2,nextval('${sequence}'),now()+($3::text||' milliseconds')::interval)
+        ON CONFLICT (key) DO UPDATE SET token=EXCLUDED.token,fencing_token=EXCLUDED.fencing_token,expires_at=EXCLUDED.expires_at
+        WHERE ${table("locks")}.expires_at<=now()
+        RETURNING fencing_token::text,(extract(epoch from expires_at)*1000)::bigint::text AS expires_at_ms`, [key, token, ttlMs]);
+      const row = result.rows[0];
+      if (row) return { key, token, fencingToken: Number(row.fencing_token), expiresAtMs: Number(row.expires_at_ms) } satisfies LockLease;
+      if (waitMs <= 0) return null;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    } while (Date.now() <= deadline);
+    return null;
+  };
+
   const locks: LeaseLockStore = {
-    async acquire(key, token, ttlMs, waitMs) { return Boolean(await this.acquireLease(key, token, ttlMs, waitMs)); },
-    async acquireLease(key, token, ttlMs, waitMs) {
-      const deadline = Date.now() + Math.max(0, waitMs);
-      do {
-        const result = await q<{ fencing_token: string; expires_at_ms: string }>(`INSERT INTO ${table("locks")} (key,token,fencing_token,expires_at)
-          VALUES ($1,$2,nextval('${sequence}'),now()+($3::text||' milliseconds')::interval)
-          ON CONFLICT (key) DO UPDATE SET token=EXCLUDED.token,fencing_token=EXCLUDED.fencing_token,expires_at=EXCLUDED.expires_at
-          WHERE ${table("locks")}.expires_at<=now()
-          RETURNING fencing_token::text,(extract(epoch from expires_at)*1000)::bigint::text AS expires_at_ms`, [key, token, ttlMs]);
-        const row = result.rows[0];
-        if (row) return { key, token, fencingToken: Number(row.fencing_token), expiresAtMs: Number(row.expires_at_ms) } satisfies LockLease;
-        if (waitMs <= 0) return null;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      } while (Date.now() <= deadline);
-      return null;
-    },
+    async acquire(key, token, ttlMs, waitMs) { return Boolean(await acquirePostgresLease(key, token, ttlMs, waitMs)); },
+    acquireLease: acquirePostgresLease,
     async renew(key, token, ttlMs) {
       const result = await q(`UPDATE ${table("locks")} SET expires_at=now()+($3::text||' milliseconds')::interval WHERE key=$1 AND token=$2 AND expires_at>now()`, [key, token, ttlMs]);
       return (result.rowCount ?? 0) > 0;
@@ -224,19 +306,33 @@ export function createPostgresAdapter(input: { pool: PgPoolLike; prefix?: string
     async release(key, token) { await q(`DELETE FROM ${table("locks")} WHERE key=$1 AND token=$2`, [key, token]); },
   };
 
+  const listAuditPage: NonNullable<AuditStore["listPage"]> = async (filter) => {
+    const limit = Math.min(500, Math.max(1, filter?.limit ?? 100));
+    const cursor = decodeAuditCursor(filter?.cursor);
+    const values: unknown[] = [];
+    const where: string[] = [];
+    if (filter?.userId) { values.push(filter.userId); where.push(`user_id=$${values.length}`); }
+    if (filter?.action) { values.push(filter.action); where.push(`action=$${values.length}`); }
+    if (cursor) {
+      values.push(cursor.createdAt, cursor.id);
+      where.push(`(created_at,id)<($${values.length - 1}::timestamptz,$${values.length}::text)`);
+    }
+    values.push(limit + 1);
+    const result = await q<{ event: AuditEvent }>(`SELECT event FROM ${table("audit")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC,id DESC LIMIT $${values.length}`, values);
+    const hasMore = result.rows.length > limit;
+    const items = result.rows.slice(0, limit).map((row) => row.event);
+    const last = items.at(-1);
+    return { items, ...(hasMore && last ? { nextCursor: encodeAuditCursor(last) } : {}) };
+  };
+
   const audit: AuditStore = {
     async write(event) {
       await q(`INSERT INTO ${table("audit")} (id,user_id,action,created_at,event) VALUES ($1,$2,$3,$4,$5::jsonb)`, [event.id, event.actor.userId ?? null, event.action, event.createdAt, JSON.stringify(event)]);
     },
     async list(filter) {
-      const values: unknown[] = [];
-      const where: string[] = [];
-      if (filter?.userId) { values.push(filter.userId); where.push(`user_id=$${values.length}`); }
-      if (filter?.action) { values.push(filter.action); where.push(`action=$${values.length}`); }
-      values.push(Math.min(500, filter?.limit ?? 100));
-      const result = await q<{ event: AuditEvent }>(`SELECT event FROM ${table("audit")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT $${values.length}`, values);
-      return result.rows.map((row) => row.event);
+      return (await listAuditPage(filter)).items;
     },
+    listPage: listAuditPage,
   };
 
   const outbox = createOutboxStore(q, table);
@@ -269,18 +365,20 @@ export function createPostgresAdapter(input: { pool: PgPoolLike; prefix?: string
     },
   };
 
+  const writeMetricPoints: AnalyticsStore["writeMany"] = async (points) => {
+    if (!points.length) return;
+    const values: unknown[] = [];
+    const rows = points.map((point) => {
+      const offset = values.length;
+      values.push(point.name, point.value, point.kind, point.timestamp, JSON.stringify(point.dimensions ?? {}));
+      return `($${offset + 1},$${offset + 2},$${offset + 3},$${offset + 4},$${offset + 5}::jsonb)`;
+    });
+    await q(`INSERT INTO ${table("metrics")} (name,value,kind,recorded_at,dimensions) VALUES ${rows.join(",")}`, values);
+  };
+
   const analytics: AnalyticsStore = {
-    async write(point) { await this.writeMany([point]); },
-    async writeMany(points) {
-      if (!points.length) return;
-      const values: unknown[] = [];
-      const rows = points.map((point) => {
-        const offset = values.length;
-        values.push(point.name, point.value, point.kind, point.timestamp, JSON.stringify(point.dimensions ?? {}));
-        return `($${offset + 1},$${offset + 2},$${offset + 3},$${offset + 4},$${offset + 5}::jsonb)`;
-      });
-      await q(`INSERT INTO ${table("metrics")} (name,value,kind,recorded_at,dimensions) VALUES ${rows.join(",")}`, values);
-    },
+    async write(point) { await writeMetricPoints([point]); },
+    writeMany: writeMetricPoints,
     async query(query: MetricQuery) {
       const values: unknown[] = [];
       const where: string[] = [];

@@ -29,6 +29,7 @@ export function createExpressHandler<I, O>(
   options?: {
     input?: (request: ExpressRequestLike) => unknown;
     locale?: (request: ExpressRequestLike) => string | undefined;
+    signal?: (request: ExpressRequestLike) => AbortSignal | undefined;
   },
 ): (request: ExpressRequestLike, response: ExpressResponseLike, next: ExpressNextLike) => Promise<void> {
   return async (request, response, next) => {
@@ -46,6 +47,7 @@ export function createExpressHandler<I, O>(
         sessionToken: request.cookies?.[kernel.cookie.name],
         csrfToken: header(request.headers, "x-csrf-token"),
         idempotencyKey: header(request.headers, "idempotency-key"),
+        signal: options?.signal?.(request),
       };
       const result = await kernel.execute(action, envelope);
       response.setHeader("X-Request-Id", result.meta.requestId);

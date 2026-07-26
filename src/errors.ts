@@ -62,6 +62,8 @@ export const errors = {
   idempotencyConflict: () => new GuildGateError({ code: "IDEMPOTENCY_CONFLICT", status: 409 }),
   idempotencyInflight: () =>
     new GuildGateError({ code: "IDEMPOTENCY_INFLIGHT", status: 409, retryable: true }),
+  idempotencyReservationLost: () =>
+    new GuildGateError({ code: "IDEMPOTENCY_RESERVATION_LOST", status: 409, retryable: true }),
   revisionConflict: (details?: Record<string, unknown>) =>
     new GuildGateError({ code: "REVISION_CONFLICT", status: 409, details }),
   lockUnavailable: () =>
@@ -73,6 +75,7 @@ export const errors = {
   ratePolicyResetDenied: (policy: string) =>
     new GuildGateError({ code: "RATE_POLICY_RESET_DENIED", status: 403, details: { policy } }),
   timeout: () => new GuildGateError({ code: "UPSTREAM_TIMEOUT", status: 504, retryable: true }),
+  requestAborted: () => new GuildGateError({ code: "REQUEST_ABORTED", status: 499, retryable: true }),
   upstreamUnavailable: (details?: Record<string, unknown>) =>
     new GuildGateError({ code: "UPSTREAM_UNAVAILABLE", status: 503, retryable: true, details }),
   maintenance: (reason?: string) =>

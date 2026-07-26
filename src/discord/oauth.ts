@@ -1,7 +1,9 @@
 import { sha256, randomToken, type TokenCipher } from "../crypto.js";
 import { errors, GuildGateError } from "../errors.js";
 import type { GuildGateKernel } from "../kernel.js";
+import { DistributedLockManager } from "../locks.js";
 import { runWithDeadline } from "../resilience.js";
+import { isLoopbackOrUnspecifiedHost } from "../security.js";
 import type { OAuthCredentialStore, OAuthStateStore } from "../stores.js";
 import type { SupportedLocale } from "../types.js";
 
@@ -70,12 +72,13 @@ export function createDiscordOAuth(input: {
 }): DiscordOAuthClient {
   const config = input.config;
   const fetcher = config.fetch ?? globalThis.fetch;
-  const apiBase = config.apiBaseUrl ?? "https://discord.com/api/v10";
+  const apiBase = (config.apiBaseUrl ?? "https://discord.com/api/v10").replace(/\/$/, "");
   const authBase = config.authorizationBaseUrl ?? "https://discord.com/oauth2/authorize";
   const stateStore = input.stateStore ?? input.kernel.config.stores.oauthStates;
   const credentialStore = input.credentialStore ?? input.kernel.config.stores.credentials;
   const stateCookieName = config.stateCookieName ?? (input.kernel.config.app.environment === "production" ? "__Host-guildgate.oauth" : "guildgate.oauth");
   const scopes = config.scopes ?? ["identify", "guilds"];
+  const refreshLocks = new DistributedLockManager(input.kernel.config.stores.locks);
   if (!config.clientId.trim() || !config.clientSecret.trim()) throw errors.configuration("Discord OAuth clientId and clientSecret are required");
   if ((config.stateTtlMs ?? 10 * 60_000) < 60_000 || (config.stateTtlMs ?? 10 * 60_000) > 60 * 60_000) {
     throw errors.configuration("Discord OAuth stateTtlMs must be between 1 minute and 1 hour");
@@ -86,6 +89,8 @@ export function createDiscordOAuth(input: {
   if (!scopes.length || scopes.some((scope) => !/^[a-zA-Z0-9._-]{1,64}$/.test(scope))) throw errors.configuration("Discord OAuth scopes are invalid");
   validateStateCookieName(stateCookieName, input.kernel.config.app.environment === "production");
   validateRedirectUri(config.redirectUri, input.kernel.config.app.environment);
+  validateEndpointUrl(apiBase, input.kernel.config.app.environment, "Discord API base URL");
+  validateEndpointUrl(authBase, input.kernel.config.app.environment, "Discord authorization URL");
 
   return {
     async beginLogin(begin = {}) {
@@ -157,23 +162,40 @@ export function createDiscordOAuth(input: {
     },
 
     async getAccessToken(userId) {
-      const record = await credentialStore.get("discord", userId);
-      if (!record) throw errors.authenticationRequired();
-      if (new Date(record.expiresAt).getTime() - Date.now() > 60_000) {
-        return input.cipher.decrypt(record.accessTokenCiphertext);
+      const initial = await credentialStore.get("discord", userId);
+      if (!initial) throw errors.authenticationRequired();
+      if (new Date(initial.expiresAt).getTime() - Date.now() > 60_000) {
+        return input.cipher.decrypt(initial.accessTokenCiphertext);
       }
-      const refreshed = await refreshToken(input.cipher.decrypt(record.refreshTokenCiphertext));
-      const now = new Date();
-      await credentialStore.set({
-        ...record,
-        accessTokenCiphertext: input.cipher.encrypt(refreshed.access_token),
-        refreshTokenCiphertext: input.cipher.encrypt(refreshed.refresh_token),
-        scope: refreshed.scope,
-        tokenType: refreshed.token_type,
-        expiresAt: new Date(now.getTime() + refreshed.expires_in * 1000).toISOString(),
-        updatedAt: now.toISOString(),
+
+      const requestTimeoutMs = config.requestTimeoutMs ?? 5_000;
+      const held = await refreshLocks.acquire({
+        key: `oauth-refresh:discord:${userId}`,
+        ttlMs: Math.max(5_000, requestTimeoutMs * 4),
+        waitMs: requestTimeoutMs,
       });
-      return refreshed.access_token;
+      try {
+        const current = await credentialStore.get("discord", userId);
+        if (!current) throw errors.authenticationRequired();
+        if (new Date(current.expiresAt).getTime() - Date.now() > 60_000) {
+          return input.cipher.decrypt(current.accessTokenCiphertext);
+        }
+        const refreshed = await refreshToken(input.cipher.decrypt(current.refreshTokenCiphertext));
+        held.assertOwned();
+        const now = new Date();
+        await credentialStore.set({
+          ...current,
+          accessTokenCiphertext: input.cipher.encrypt(refreshed.access_token),
+          refreshTokenCiphertext: input.cipher.encrypt(refreshed.refresh_token),
+          scope: refreshed.scope,
+          tokenType: refreshed.token_type,
+          expiresAt: new Date(now.getTime() + refreshed.expires_in * 1000).toISOString(),
+          updatedAt: now.toISOString(),
+        });
+        return refreshed.access_token;
+      } finally {
+        await held.release().catch(() => undefined);
+      }
     },
 
     async revoke(userId) {
@@ -224,7 +246,7 @@ export function createDiscordOAuth(input: {
   }
 
   async function request(path: string, init: RequestInit): Promise<Response> {
-    const target = path.startsWith("/oauth2") ? `${apiBase}${path}` : `${apiBase}${path}`;
+    const target = `${apiBase}${path}`;
     return runWithDeadline({
       timeoutMs: config.requestTimeoutMs ?? 5_000,
       retry: {
@@ -274,8 +296,24 @@ function safeReturnTo(value: string): string {
 function validateRedirectUri(value: string, environment: string): void {
   const url = new URL(value);
   if (url.username || url.password || url.hash) throw errors.configuration("Discord redirect URI cannot contain credentials or a fragment");
-  if (environment === "production" && url.protocol !== "https:") {
-    throw errors.configuration("Discord redirect URI must use HTTPS in production");
+  if (environment === "production") {
+    if (url.protocol !== "https:") throw errors.configuration("Discord redirect URI must use HTTPS in production");
+    if (isLoopbackOrUnspecifiedHost(url.hostname)) {
+      throw errors.configuration("Discord redirect URI cannot use a loopback or unspecified host in production");
+    }
+  }
+}
+
+function validateEndpointUrl(value: string, environment: string, label: string): void {
+  const url = new URL(value);
+  if (url.username || url.password || url.hash || url.search) {
+    throw errors.configuration(`${label} cannot contain credentials, a query or a fragment`);
+  }
+  if (environment === "production") {
+    if (url.protocol !== "https:") throw errors.configuration(`${label} must use HTTPS in production`);
+    if (isLoopbackOrUnspecifiedHost(url.hostname)) {
+      throw errors.configuration(`${label} cannot use a loopback or unspecified host in production`);
+    }
   }
 }
 

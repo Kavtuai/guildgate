@@ -1,8 +1,9 @@
 import { cpus } from "node:os";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createGuildGateTestHarness } from "../dist/testing.js";
 import { runLoadScenario } from "../dist/contracts.js";
 
+const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const operations = numberArg("--operations", 5_000);
 const concurrency = numberArg("--concurrency", Math.min(32, Math.max(4, cpus().length * 2)));
 const harness = createGuildGateTestHarness();
@@ -37,8 +38,8 @@ const report = await runLoadScenario({
 });
 
 const output = {
-  package: "@kavtuai/guildgate",
-  version: "1.0.0",
+  package: packageJson.name,
+  version: packageJson.version,
   generatedAt: new Date().toISOString(),
   runtime: { node: process.version, platform: process.platform, architecture: process.arch, cpuCount: cpus().length },
   scenario: "in-memory guarded writes with unique idempotency keys and shared resource locks",

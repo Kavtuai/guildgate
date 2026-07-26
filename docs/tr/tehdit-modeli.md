@@ -2,31 +2,33 @@
 
 ## Korunan varlıklar
 
-Discord bot tokenı, OAuth sırrı ve tokenları, session kayıtları, sunucu ayarları, audit geçmişi, owner politikaları, realtime olayları, analitik operasyon verileri ve panel erişilebilirliği korunur.
+Discord bot/OAuth credential'ları, session kayıtları, sunucu ayarları, audit geçmişi, owner politikaları, realtime olayları, operasyon metrikleri ve paket yayın bütünlüğü korunur.
 
 ## Dikkate alınan saldırılar
 
-Yetkisiz internet isteği, yanlış sunucuya işlem, eski yönetici session'ı, CSRF, siteler arası socket, OAuth veya yazma tekrar saldırısı, eş zamanlı yazar, süresi geçmiş lock sahibi, yavaş realtime istemcisi, gizli değer logu, düşük yetkili veri tabanı hesabı ve paket yayın zinciri saldırısı dikkate alınır.
+Kimliksiz istek, CSRF, cross-site socket, OAuth replay, duplicate write, stale revision, eski idempotency worker, süresi dolan lock sahibi, yavaş realtime istemcisi, secret sızıntısı, düşük yetkili veri tabanı hesabı ve yayın zinciri saldırısı dikkate alınır.
 
 ## Kontroller
 
-- HttpOnly session çerezi ve sunucuda token hash'i
-- login ve süreye bağlı session yenileme
-- unsafe metotlarda exact-origin ve session'a bağlı CSRF
-- tek kullanımlık, tarayıcı nonce değerine bağlı OAuth state
-- sunucu taraflı kaynak ve Discord yetki kontrolü
-- idempotency replay ve optimistic revision
+- HttpOnly opak session cookie ve sunucuda token hash'i
+- rotation, expiry, idle expiry, revocation ve atomik session sınırı
+- exact-origin ve session'a bağlı CSRF
+- tek kullanımlık tarayıcıya bağlı OAuth state
+- sunucu taraflı kaynak ve Discord yetkisi
+- reservation sahipli idempotency ve optimistic revision
 - yenilenen lease ve fencing token
-- timeout, retry ve circuit breaker
-- kanal başına subscription yetkisi
-- realtime buffer ve kuyruk sınırı
-- transaction ile outbox kaydı
-- çoklu worker claim lease'i
-- owner action yetkisi, rate ve audit
-- CI ve OIDC trusted publishing
+- katı yanıt süresi, bounded retry ve circuit breaker
+- transaction kesinliği ve savepoint
+- kanal yetkisi, payload/rate/backpressure ve session revalidation
+- transaction outbox ve claim lease
+- audit redaction, bounded serialization, protected GitHub environment, OIDC npm yayını ve provenance
 
-## Kalan riskler
+## Temel kurallar
 
-Özel store atomik kuralları bozabilir. Fencing token kullanmayan veri tabanı eski yazarı kabul edebilir. Yanlış retry politikası dış serviste işlemi tekrarlayabilir. Outbox teslimi worker çökmesinde tekrar edebilir. Realtime sequence kanallar arasında global sıra vermez. Yüksek cardinality metrik maliyet yaratabilir. Paket içindeki inceleme bakımcı tarafından yapılmıştır; bağımsız üçüncü taraf denetimi iddiası taşımaz. Ayrı güvence gereken dağıtımlar `EXTERNAL_REVIEW_GUIDE.md` kapsamını kullanmalıdır.
+Commit edilen domain yazımı gözlemci hatası nedeniyle rollback sayılmaz. Eski idempotency worker yeni reservation kaydını tamamlayamaz. Süresi dolan lease sahibi durable fencing kontrolü olmadan güvenilir değildir. Outbox olayı birden fazla kez teslim edilebilir ve event ID ile deduplicate edilmelidir.
 
-GuildGate ele geçirilmiş hostu, TLS/firewall kurulumunu, veri tabanı rolünü, secret manager'ı, yedeklemeyi ve uygulamaya özel bot politikasını yönetmez.
+## Sınırlar
+
+GuildGate ele geçirilmiş hostu, yanlış TLS/firewall kurulumunu, aşırı yetkili veri tabanı rolünü, sızan uygulama secret'ını veya ürüne özel authorization politikasını düzeltemez. Reverse proxy trust ve Discord ürün politikası uygulamanın sorumluluğudur.
+
+Dahil edilen inceleme bakımcı incelemesidir; bağımsız üçüncü taraf denetimi iddiası taşımaz. Harici inceleme kapsamı `EXTERNAL_REVIEW_GUIDE.md` dosyasındadır.

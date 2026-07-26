@@ -1,55 +1,75 @@
-# Maintainer security audit
+# Maintainer security and reliability review
 
 Date: 2026-07-26
-Reviewed version: `@kavtuai/guildgate@1.0.0`
+Reviewed version: `@kavtuai/guildgate@1.1.0`
 
 ## Scope
 
-This review covers the package source, public exports, HTTP adapters, session and OAuth handling, guarded writes, retry and lock behavior, realtime replay, Redis and PostgreSQL adapters, operator responses, analytics SVG output, release automation and package contents.
+This review covers the action kernel, session and OAuth handling, HTTP adapters, transaction boundaries, idempotency, distributed leases, Redis and PostgreSQL stores, realtime transports, outbox workers, operator responses, analytics output, package exports, release automation and source archive contents.
 
-The review was performed by the project maintainer. It is a release security review, not an independent third-party audit. GuildGate does not describe `1.0.0` as externally audited.
+The work was performed as a maintainer code review and regression pass. It is not an independent third-party audit or a formal assurance certificate.
 
 ## Method
 
 The review combined:
 
-- manual data-flow review from untrusted input to storage, logs and network output
-- authorization checks around HTTP actions and realtime subscriptions
-- concurrency review for idempotency, leases, fencing and outbox claims
-- misuse tests for malformed tokens, configuration and transport messages
-- package and release checks for unexpected files, secrets and token-based publishing
-- regression tests for each corrected finding
+- source-level data-flow and failure-path analysis
+- concurrency analysis for transactions, reservations, leases, sessions, rate limits and outbox claims
+- malformed input and production configuration tests
+- transport parity tests for WebSocket, Socket.IO and SSE
+- package-consumer installation and every public export import
+- enforced Node.js line, branch and function coverage thresholds
+- Coverage test files execute serially so instrumentation does not distort deadline and lease-renewal timing
+- source, workflow, package identity and credential-pattern checks
+- a bounded in-memory load regression
 
-## Findings closed for 1.0.0
+## Findings closed in 1.1.0
 
 | ID | Severity | Area | Correction |
 |---|---|---|---|
-| GG-SEC-001 | High | Realtime replay | Replay now starts only after the channel subscription is authorized. A denied subscription cannot read retained events. |
-| GG-SEC-002 | High | Error responses | Internal error details are removed from hidden server errors. Exposed details pass through secret redaction. |
-| GG-SEC-003 | Medium | SVG analytics output | Chart dimensions, colors, fonts and titles are bounded and sanitized before SVG generation. |
-| GG-SEC-004 | Medium | PostgreSQL idempotency | Reservation uses conflict-safe insert behavior followed by a locked read, preventing concurrent callers from both becoming the first writer. |
-| GG-SEC-005 | Medium | Redis locks | Redis locks now support renewal, ownership checks and increasing fencing tokens through atomic scripts. |
-| GG-SEC-006 | Medium | Retry behavior | Generic `TypeError` values are no longer retried by default. Applications must opt in when an operation is known to be safe to repeat. |
-| GG-SEC-007 | Medium | Audit redaction | Secret-key matching handles common separators and case styles. Redaction and stable serialization now tolerate cycles and depth limits. |
-| GG-SEC-008 | Medium | Input boundaries | HTTP methods, cookies, action definitions, OAuth settings, lock settings and realtime channels now have runtime validation and size limits. |
-| GG-SEC-009 | Low | Realtime protocol | Malformed JSON closes a socket with protocol code 1007 instead of leaking an unhandled parser error. |
-| GG-SEC-010 | Low | Operator sessions | Session metadata is omitted from operator output unless the application supplies an explicit public mapping function. |
+| GG-110-001 | High | Transaction finality | A successful `COMMIT` is separated from post-commit callbacks. Callback failure cannot trigger rollback callbacks or repeat a committed domain operation. |
+| GG-110-002 | High | Idempotency ownership | Inflight records carry `reservationId`; renew, complete and fail use atomic owner comparison in memory, Redis and PostgreSQL. |
+| GG-110-003 | High | Deadline behavior | The response deadline returns promptly even when application code ignores cancellation. Late settlement is observed within a configured bound and committed idempotent results are retained for replay. |
+| GG-110-004 | High | Mandatory audit | Configured fail-closed audit writes occur before commit and require auditing, idempotency and a required transaction. |
+| GG-110-005 | Medium | PostgreSQL nesting | Nested work uses savepoints. Inner rollback is limited to its savepoint and successful callback registration joins the outer transaction. |
+| GG-110-006 | Medium | PostgreSQL rate limits | Bucket updates take a transaction-scoped advisory lock, preventing concurrent first-hit loss. |
+| GG-110-007 | Medium | Redis cache indexes | Retagging, stale membership removal and deletion are atomic Lua operations; tag indexes receive bounded TTLs. |
+| GG-110-008 | Medium | Session cap | Official memory, Redis and PostgreSQL stores enforce the per-user session cap within the store operation. |
+| GG-110-009 | Medium | OAuth refresh | Discord refresh is protected by a distributed single-flight lease and credentials are re-read after ownership is acquired. |
+| GG-110-010 | Medium | Realtime parity | Socket.IO uses shared size, rate, activity, subscription and backpressure checks. Capacity is rechecked after asynchronous authorization. |
+| GG-110-011 | Medium | Realtime failure cleanup | Send failures close and remove broken connections. Revocation listener failures are isolated. |
+| GG-110-012 | Medium | Outbox bounds | Batch size, concurrency and claim lease are bounded; stored publisher errors are newline-normalized and truncated. |
+| GG-110-013 | Medium | Audit paging | Opaque `(createdAt, id)` cursors allow complete stable traversal and reject malformed or oversized cursors. |
+| GG-110-014 | Medium | Production endpoints | Application, origin and Discord OAuth URLs reject loopback, unspecified and insecure production endpoints. |
+| GG-110-015 | Low | HTTP cleanup | Expired and revoked session results carry cookie-clear metadata through Fastify, Express and Hono adapters. |
+| GG-110-016 | Low | Adapter method binding | Official memory, Redis, PostgreSQL and discord.js adapter methods remain safe when passed as standalone callbacks. |
 
-## Result
+The review also rechecked earlier protections for authorized replay, hidden error details, secret redaction, bounded serialization, token authentication, SVG injection, retry defaults and malformed realtime messages.
 
-Release-blocking findings open at the end of this review:
+## Verification result
 
-| Severity | Open |
-|---|---:|
-| Critical | 0 |
-| High | 0 |
-| Medium | 0 |
-| Low | 0 |
+At the end of this maintainer pass:
 
-The fixes are covered by automated regression tests. The release verification task also checks TypeScript, documentation rules, package contents, secret patterns, local load behavior and a generated npm tarball.
+- 76 deterministic tests passed
+- 0 deterministic tests failed
+- 2 live-service definitions were skipped locally and remain enabled in CI
+- line coverage: 82.25%
+- branch coverage: 73.57%
+- function coverage: 73.30%
+- 46 source files and 16 public export paths passed the release security verifier
+- 5,000 load-harness operations completed with 0 failures
+- a clean consumer installed the tarball and imported every public subpath
 
-## Limits of this review
+Two live-service test definitions are present for disposable PostgreSQL 17 and Redis 8 services. They were not executed in the local artifact container because those daemons were unavailable; CI is configured to execute them with real services.
 
-This audit does not prove that every application using GuildGate is secure. The application still owns TLS, proxy trust, database roles, secret storage, Discord permissions, custom authorization callbacks, custom stores, retention and incident response.
+## Explicit operating boundaries
 
-Live Redis, PostgreSQL, Discord and multi-instance tests must be repeated in the target deployment. The review handoff in `EXTERNAL_REVIEW_GUIDE.md` is available for teams that require an independent assessment or compliance evidence.
+- JavaScript cannot forcibly terminate arbitrary application promises. `maximumLateSettlementMs` bounds GuildGate resource retention; application code must honor `AbortSignal` and durable writes must reject stale fencing tokens.
+- Transactional outbox delivery is at-least-once. Consumers must deduplicate event IDs.
+- A custom fail-closed audit store must enlist in the same transaction as the domain write.
+- Custom adapters must satisfy contract `1.1`, including reservation ownership, atomic session limits and cursor paging.
+- Application security still depends on TLS, proxy trust, database roles, secret storage, Discord permissions, custom authorization, retention and incident response.
+
+## Status
+
+No known release-blocking finding remained after this maintainer review and regression pass. That statement describes the findings discovered and tested in this scope; it does not claim that undiscovered defects are impossible. `EXTERNAL_REVIEW_GUIDE.md` remains the handoff for an independent assessment.

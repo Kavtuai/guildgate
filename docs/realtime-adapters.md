@@ -1,49 +1,29 @@
 # Realtime adapters
 
-The realtime hub owns session resolution, origin checks, channel authorization, message limits, subscription limits, idle checks and revocation handling. Transport adapters connect the hub to a network library.
+The realtime hub owns session validation, exact-origin checks, channel authorization, message size, client rate, idle activity, subscription limits and slow-client handling. The transport binds those controls to a network library.
 
 ## WebSocket
 
-`attachWebSocket()` accepts a socket with `send`, `close`, `on`, optional `ping` and optional `bufferedAmount`. Heartbeat uses ping/pong when the socket supports it. A missing pong closes the connection and detaches it from the hub.
-
-Client messages:
-
-```json
-{"type":"subscribe","channel":"guild:123","afterSequence":42}
-```
-
-```json
-{"type":"unsubscribe","channel":"guild:123"}
-```
-
-Each subscription calls the application authorization callback.
+`attachWebSocket()` supports ping/pong heartbeat, authorized subscribe/unsubscribe messages and replay from a channel sequence. Invalid JSON, oversized messages, rate excess and slow clients close with an appropriate protocol code.
 
 ## Socket.IO
 
-`attachSocketIo()` uses application-provided handshake auth and origin values. It listens for:
+`attachSocketIo()` reads the session and origin from the handshake or explicit input. Subscribe, unsubscribe and heartbeat events are serialized and passed through `hub.acceptMessage()`, so they share WebSocket payload, rate and activity controls.
 
-- `guildgate:subscribe`
-- `guildgate:unsubscribe`
-- `disconnect`
-
-Events are emitted as `guildgate:event`, replay rows as `guildgate:replay` and closure reasons as `guildgate:close`.
+Acknowledgements return `{ ok, channel }` or a stable error code. Replay uses `guildgate:replay`. A transport whose writable flag is false exposes infinite buffered pressure and is disconnected by the hub.
 
 ## Server-Sent Events
 
-`createServerSentEventStream()` writes valid SSE frames and returns `false` after the buffer limit is exceeded. Applications should authenticate and authorize the HTTP request before creating the stream.
+`createServerSentEventStream()` formats SSE frames and maintains a bounded queue. The stream closes when the queue limit is exceeded. Authenticate and authorize the HTTP request before opening it.
 
-## Sequences and resume
+## Resume and delivery
 
-A `RealtimeEventLog` assigns an increasing sequence per channel. Clients store the latest sequence and send it during reconnect. The server replays rows after that cursor up to the configured limit.
+Sequences are ordered within one channel, not globally. A reconnecting client sends its last sequence and the event log returns a bounded replay. The transactional outbox is at-least-once; client and worker consumers should deduplicate by event ID.
 
-Sequence values order events inside one channel. They do not create a global order across channels.
+## Revocation
 
-## Revocation across instances
+The local hub closes connections immediately for a revoked session. Multi-instance deployments should publish session hashes through the revocation bus so every instance closes matching connections. Periodic session revalidation is a second line of defense.
 
-The revocation bus contract lets an application publish a session hash to other instances. Each instance closes matching local connections. A Redis or PostgreSQL notification adapter can implement the bus.
+## Failure and race handling
 
-## Outbox workers
-
-`createOutboxWorker()` claims rows with a worker ID and claim lease. A successful publish marks the row complete. A failed publish releases or updates it through the store so another run can retry it.
-
-Configure event retention and replay limits. Realtime logs are not a permanent event archive by default.
+Subscription capacity is checked again after asynchronous authorization completes. A send failure closes and removes the broken connection. Session revocation listeners are isolated so one synchronous or asynchronous listener failure does not prevent other local nodes from processing the revocation message. Outbox dispatch bounds batch size, claim lease and concurrency, and sanitizes stored error text.

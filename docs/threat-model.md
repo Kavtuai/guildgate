@@ -2,67 +2,34 @@
 
 ## Protected assets
 
-- Discord bot token and OAuth client secret
-- OAuth access and refresh tokens
-- session tokens and active sessions
-- guild settings and moderation actions
-- audit history and owner policies
-- realtime events and resume history
-- analytics records that may expose operational details
-- availability of the dashboard and Discord API allowance
+Discord bot and OAuth credentials, session records, guild settings, audit history, owner policies, realtime events, operational analytics and package publication integrity are protected assets.
 
-## Attackers considered
+## Considered attacks
 
-- unauthenticated internet clients
-- authenticated users without permission for the target guild
-- former guild managers with an open session
-- malicious sites attempting cross-site HTTP or WebSocket use
-- replay of OAuth callbacks, writes or idempotency keys
-- concurrent writers and paused processes with expired locks
-- slow clients and oversized realtime traffic
-- application bugs that log secrets
-- compromised low-privilege database accounts
-- package-release and dependency supply-chain attackers
+The model covers unauthenticated requests, CSRF, cross-site socket connections, OAuth replay, duplicate writes, stale revisions, stale idempotency workers, expired lock owners, slow realtime clients, secret leakage, low-privilege database access and publication-chain compromise.
 
 ## Controls
 
-| Threat | Control |
-|---|---|
-| Script access to session token | HttpOnly cookie design |
-| Session-store disclosure | Stored token hashes |
-| Session fixation | Opaque login token and scheduled rotation |
-| CSRF | Exact origin and session-bound token on unsafe methods |
-| OAuth callback replay | One-time state and browser nonce binding |
-| Open redirect | Local return paths |
-| Guild substitution | Parsed resource and server-side authorization |
-| Stale Discord permission | Live check option or gateway-invalidated cache |
-| Double submission | Idempotency state and response replay |
-| Lost update | Optimistic revision and conditional database update |
-| Expired lock owner writes | Renewable lease and fencing token |
-| Slow upstream | AbortSignal, deadline, retry policy and circuit breaker |
-| Cross-site socket | Origin allowlist and session resolution |
-| Unauthorized subscription | Authorization callback per channel |
-| Slow realtime client | Buffered-byte and event-queue limits |
-| Event before commit | Transaction adapter and outbox enqueue |
-| Worker collision | Claim lease and atomic row selection |
-| Owner API misuse | Owner action authorization, CSRF, rate and audit |
-| Secret exposure in logs | Redaction hooks and application responsibility |
-| Malicious release | protected repository, CI, OIDC trusted publishing and provenance |
+- opaque HttpOnly session cookies and server-side token hashes
+- rotation, expiry, idle expiry, revocation and atomic session caps
+- exact-origin and session-bound CSRF checks
+- one-time browser-bound OAuth state
+- server-side resource and Discord authorization
+- reservation-owned idempotency and optimistic revisions
+- renewable leases and fencing tokens
+- strict response deadlines, bounded retry and circuit breakers
+- transaction finality and savepoint handling
+- channel authorization, message/rate limits, backpressure and session revalidation
+- transactional outbox with claim leases
+- audit redaction, bounded serialization and owner action controls
+- protected GitHub environment, OIDC npm publication and provenance
 
-## Remaining risks
+## Important invariants
 
-- A custom store can break atomic rules.
-- A database update that ignores fencing tokens can accept a stale writer.
-- Retry policy chosen by the application can repeat an unsafe external side effect.
-- Realtime replay does not provide a global order across channels.
-- Delivery can be duplicated after a publisher crash; consumers should be idempotent.
-- Metric dimensions can create high cardinality and storage cost.
-- Live Discord permission checks depend on Discord availability.
-- Memory stores lose all state at process exit.
-- The bundled audit is a maintainer review, not an independent third-party assessment. Deployments that require separate assurance should commission one using `EXTERNAL_REVIEW_GUIDE.md`.
+A committed write is not rolled back because an observer fails. An old idempotency worker cannot complete a newer reservation. An expired lease owner cannot be trusted without a durable fencing comparison. An outbox event may be delivered more than once and must be deduplicated by ID.
 
-## Out of scope
+## Boundaries
 
-GuildGate does not secure a compromised host, configure TLS or a firewall, manage database roles, store secrets, create backups, define application schemas, choose bot moderation policy or replace incident response.
+GuildGate cannot secure a compromised host, incorrect TLS or firewall configuration, over-privileged database roles, leaked application secrets or product-specific authorization rules. Reverse-proxy trust and Discord policy remain application responsibilities.
 
-Review this model when session, OAuth, write, lock, outbox, owner, adapter, analytics or release behavior changes.
+The included review is a maintainer review, not an independent third-party audit. `EXTERNAL_REVIEW_GUIDE.md` defines the handoff for a commissioned review.

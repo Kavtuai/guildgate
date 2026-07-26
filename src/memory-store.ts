@@ -12,7 +12,8 @@ import type {
   RateLimitHitResult,
   SessionRecord,
 } from "./types.js";
-import type { GuildGateStores } from "./stores.js";
+import type { AuditStore, GuildGateStores } from "./stores.js";
+import { compareAuditRowsDescending, decodeAuditCursor, encodeAuditCursor, isAfterAuditCursor } from "./audit-pagination.js";
 
 interface RateBucket {
   count: number;
@@ -58,10 +59,34 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
   const blockKey = (type: BlockRecord["subjectType"], id: string) => `${type}:${id}`;
   const credentialKey = (provider: string, userId: string) => `${provider}:${userId}`;
 
+  async function acquireMemoryLease(key: string, token: string, ttlMs: number, waitMs: number) {
+    const deadline = Date.now() + Math.max(0, waitMs);
+    do {
+      const now = Date.now();
+      const current = locks.get(key);
+      if (!current || current.expiresAtMs <= now) {
+        fencingToken += 1;
+        const entry = { token, expiresAtMs: now + ttlMs, fencingToken };
+        locks.set(key, entry);
+        return { key, token, fencingToken: entry.fencingToken, expiresAtMs: entry.expiresAtMs };
+      }
+      if (waitMs <= 0) return null;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - now))));
+    } while (Date.now() <= deadline);
+    return null;
+  }
+
   const bundle: MemoryStoreBundle = {
     sessions: {
       async get(idHash) {
         return sessions.get(idHash) ?? null;
+      },
+      async create(record, maximumSessionsPerUser) {
+        sessions.set(record.idHash, structuredClone(record));
+        const rows = [...sessions.values()]
+          .filter((candidate) => candidate.userId === record.userId)
+          .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt) || right.idHash.localeCompare(left.idHash));
+        for (const excess of rows.slice(Math.max(1, maximumSessionsPerUser))) sessions.delete(excess.idHash);
       },
       async set(record) {
         sessions.set(record.idHash, structuredClone(record));
@@ -155,6 +180,7 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
 
     idempotency: {
       async begin(record: IdempotencyRecord): Promise<IdempotencyBeginResult> {
+        if (!record.reservationId) throw new TypeError("Idempotency reservations require a reservationId");
         const current = idempotency.get(record.key);
         if (current && current.expiresAtMs > Date.now()) {
           if (current.requestHash !== record.requestHash) return { status: "conflict" };
@@ -164,18 +190,28 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
         idempotency.set(record.key, structuredClone(record));
         return { status: "started" };
       },
-      async complete(key, response, expiresAtMs) {
+      async complete(key, response, expiresAtMs, reservationId) {
         const current = idempotency.get(key);
-        if (!current) return;
+        if (!current || current.state !== "inflight" || !reservationId || current.reservationId !== reservationId) return false;
         idempotency.set(key, {
           ...current,
           state: "completed",
           response: structuredClone(response),
           expiresAtMs,
         });
+        return true;
       },
-      async fail(key) {
+      async renew(key, expiresAtMs, reservationId) {
+        const current = idempotency.get(key);
+        if (!current || current.state !== "inflight" || !reservationId || current.reservationId !== reservationId) return false;
+        current.expiresAtMs = expiresAtMs;
+        return true;
+      },
+      async fail(key, reservationId) {
+        const current = idempotency.get(key);
+        if (!current || current.state !== "inflight" || !reservationId || current.reservationId !== reservationId) return false;
         idempotency.delete(key);
+        return true;
       },
       async get(key) {
         const current = idempotency.get(key);
@@ -189,24 +225,9 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
 
     locks: {
       async acquire(key, token, ttlMs, waitMs) {
-        return Boolean(await this.acquireLease?.(key, token, ttlMs, waitMs));
+        return Boolean(await acquireMemoryLease(key, token, ttlMs, waitMs));
       },
-      async acquireLease(key, token, ttlMs, waitMs) {
-        const deadline = Date.now() + Math.max(0, waitMs);
-        do {
-          const now = Date.now();
-          const current = locks.get(key);
-          if (!current || current.expiresAtMs <= now) {
-            fencingToken += 1;
-            const entry = { token, expiresAtMs: now + ttlMs, fencingToken };
-            locks.set(key, entry);
-            return { key, token, fencingToken: entry.fencingToken, expiresAtMs: entry.expiresAtMs };
-          }
-          if (waitMs <= 0) return null;
-          await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - now))));
-        } while (Date.now() <= deadline);
-        return null;
-      },
+      acquireLease: acquireMemoryLease,
       async renew(key, token, ttlMs) {
         const current = locks.get(key);
         if (!current || current.token !== token || current.expiresAtMs <= Date.now()) return false;
@@ -219,18 +240,34 @@ export function createMemoryStoreBundle(): MemoryStoreBundle {
       },
     },
 
-    audit: {
-      async write(event) {
-        audit.push(structuredClone(event));
-      },
-      async list(filter) {
-        let rows = [...audit];
-        if (filter?.userId) rows = rows.filter((row) => row.actor.userId === filter.userId);
-        if (filter?.action) rows = rows.filter((row) => row.action === filter.action);
-        rows.reverse();
-        return rows.slice(0, filter?.limit ?? 100).map((row) => structuredClone(row));
-      },
-    },
+    audit: (() => {
+      const listPage: NonNullable<AuditStore["listPage"]> = async (filter) => {
+        const limit = Math.min(500, Math.max(1, filter?.limit ?? 100));
+        const cursor = decodeAuditCursor(filter?.cursor);
+        let rows = audit
+          .filter((row) => !filter?.userId || row.actor.userId === filter.userId)
+          .filter((row) => !filter?.action || row.action === filter.action)
+          .sort(compareAuditRowsDescending);
+        if (cursor) rows = rows.filter((row) => isAfterAuditCursor(row, cursor));
+        const selected = rows.slice(0, limit + 1);
+        const hasMore = selected.length > limit;
+        const items = selected.slice(0, limit).map((row) => structuredClone(row));
+        const last = items.at(-1);
+        return {
+          items,
+          ...(hasMore && last ? { nextCursor: encodeAuditCursor(last) } : {}),
+        };
+      };
+      return {
+        async write(event) {
+          audit.push(structuredClone(event));
+        },
+        async list(filter) {
+          return (await listPage(filter)).items;
+        },
+        listPage,
+      } satisfies AuditStore;
+    })(),
 
     outbox: {
       async enqueue(record) {

@@ -14,7 +14,9 @@ export class MemorySessionRevocationBus implements SessionRevocationBus {
   private readonly listeners = new Set<(message: SessionRevocationMessage) => void | Promise<void>>();
 
   async publish(message: SessionRevocationMessage): Promise<void> {
-    await Promise.allSettled([...this.listeners].map((listener) => listener(structuredClone(message))));
+    await Promise.allSettled([...this.listeners].map((listener) =>
+      Promise.resolve().then(() => listener(structuredClone(message))),
+    ));
   }
 
   subscribe(listener: (message: SessionRevocationMessage) => void | Promise<void>): () => void {

@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { hmacSha256, randomToken, safeEqualText } from "./crypto.js";
 import { errors } from "./errors.js";
 import type { EnvironmentName, HttpMethod } from "./types.js";
@@ -40,8 +41,8 @@ export function validateAllowedOrigins(origins: string[], environment: Environme
     for (const origin of normalized) {
       const url = new URL(origin);
       if (url.protocol !== "https:") throw errors.configuration("Production origins must use HTTPS");
-      if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
-        throw errors.configuration("Production origins cannot point to localhost");
+      if (isLoopbackOrUnspecifiedHost(url.hostname)) {
+        throw errors.configuration("Production origins cannot point to a loopback or unspecified host");
       }
     }
   }
@@ -115,4 +116,35 @@ export function serializeClearedCookie(config: CookieConfig): string {
     config.secure ? "Secure" : "",
     `SameSite=${config.sameSite}`,
   ].filter(Boolean).join("; ");
+}
+
+export function isLoopbackOrUnspecifiedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "0.0.0.0" || host === "::" || host === "::1") return true;
+  if (isIP(host) === 4) return isLoopbackOrUnspecifiedIpv4(host);
+  if (isIP(host) === 6) {
+    if (host === "::1" || host === "::") return true;
+    const mapped = ipv4MappedAddress(host);
+    return mapped ? isLoopbackOrUnspecifiedIpv4(mapped) : false;
+  }
+  return false;
+}
+
+
+function isLoopbackOrUnspecifiedIpv4(address: string): boolean {
+  const first = Number(address.split(".")[0]);
+  return first === 127 || first === 0;
+}
+
+function ipv4MappedAddress(address: string): string | undefined {
+  if (!address.startsWith("::ffff:")) return undefined;
+  const suffix = address.slice("::ffff:".length);
+  if (suffix.includes(".")) return suffix;
+  const groups = suffix.split(":");
+  if (groups.length !== 2) return undefined;
+  const high = Number.parseInt(groups[0] ?? "", 16);
+  const low = Number.parseInt(groups[1] ?? "", 16);
+  if (!Number.isInteger(high) || !Number.isInteger(low) || high < 0 || high > 0xffff || low < 0 || low > 0xffff) return undefined;
+  return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
 }

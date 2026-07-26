@@ -1,44 +1,39 @@
 # Yapılandırma referansı
 
-GuildGate veri tabanı, route düzeni, Discord erişimi ve arayüz kararlarını uygulamaya bırakır.
+GuildGate veri tabanı, route, Discord erişimi ve arayüz kararlarını uygulamaya bırakır.
 
-## Uygulama
+## Uygulama ve origin
 
-`app` alanında ad, ortam ve ana URL bulunur. Production ortamında HTTPS zorunludur ve localhost origin kabul edilmez.
+`app` adı, ortamı ve base URL değerini taşır. Production HTTPS ister. Allowed origin listesi localhost, IPv4 loopback, IPv6 loopback, unspecified ve IPv4-mapped loopback adreslerini reddeder. Scheme, host ve port tam eşleşmelidir.
 
-## Bot sahipleri
+## Owner ve dil
 
-`owners` alanı owner action'larını kullanabilen Discord kullanıcı ID'lerini içerir. Boş liste owner erişimini kapatır.
+`owners`, owner action'larını kullanabilen Discord kullanıcı ID'lerini içerir. Boş liste owner erişimini kapatır. Varsayılan dil `en` veya `tr` olabilir; mesaj değiştirilse bile hata kodu sabit kalır.
 
-## Dil
+## Session ve cookie
 
-Varsayılan dil `en` veya `tr` olabilir. Uygulama hata kodlarına göre kendi mesajlarını verebilir. Mesaj değişse de hata kodu sabit kalır.
+Toplam ömür, idle süre, rotation ve kullanıcı başına session sınırı ayarlanır. Resmi store'lar sınırı atomik uygular. Expired veya revoked session cevabı Fastify, Express ve Hono adapter'larında cookie temizliği üretir.
 
-## Origin
+Production için secure `__Host-` cookie, `/` path ve domain alanı olmadan kullanılmalıdır.
 
-`security.allowedOrigins` exact origin listesidir. Scheme, host ve port eşleşmelidir. Path veya wildcard kullanılmamalıdır.
+## Store ve transaction
 
-## Session
+Tam `GuildGateStores` paketi verin veya PostgreSQL ile Redis store'larını `composeStores()` ile birleştirin. Adapter sözleşmesi `1.1`; reservation sahipliği, atomik session create ve cursor audit paging davranışlarını içerir.
 
-- toplam ömür
-- boşta kalma süresi
-- token yenileme süresi
-- kullanıcı başına session sınırı
+Domain kaydı ile mandatory outbox aynı transaction'da yazılmalıdır. Post-commit gözlemci hatası rollback oluşturmaz. `audit.failClosedActions` içinde yer alan action, audit, idempotency ve required transaction kullanmalıdır. Audit store domain yazımıyla aynı transaction'a katılmalıdır.
 
-Cookie adı, path, secure, sameSite ve maxAge alanları değiştirilebilir. Production varsayılanı secure `__Host-` çerezidir.
+## Action
 
-## Store
+Authentication, CSRF, parse, resource, rate, authorization, idempotency, revision, concurrency, retry, circuit breaker, transaction, timeout, cache, realtime ve audit davranışı action başına ayarlanır.
 
-Uygulama `GuildGateStores` verir. PostgreSQL kalıcı kayıtlar için, Redis kısa ömürlü limit/cache/idempotency/lease için kullanılabilir. `composeStores()` farklı backend'leri birleştirir.
+Idempotency TTL, `timeoutMs` değerinden uzun olmalıdır. Retry yalnızca tekrar çalışması güvenli olduğu bilinen hatalara uygulanmalıdır.
 
-## Transaction, realtime ve telemetri
+## Reliability
 
-Transaction adapter isteğe bağlıdır. Immediate realtime publisher ayrı verilebilir; outbox `stores.outbox` kullanır. Telemetri hook'ları seçilen izleme sistemine bağlanır.
+`reliability.maximumLateSettlementMs` varsayılan olarak beş dakikadır; 10 milisaniye ile 24 saat arasında ayarlanır. Timeout veya cancellation sonrasında reservation ve lease’in tutulduğu gözlem süresini sınırlar. Bu süre dolduğunda kaynaklar bırakılır. Geç kalan stale worker yazımını engellemek için uygulama `AbortSignal` kullanmalı ve kalıcı yazımda fencing token doğrulamalıdır.
 
-## Audit
+## Realtime ve audit
 
-Audit açılıp kapatılabilir, ek gizli alan adları maskelenebilir ve belirli action'lar audit hatasında fail-closed çalıştırılabilir. Domain ile atomik olması gereken audit kaydı veri tabanı transaction'ına yazılmalıdır.
+Mesaj boyutu, rate, kanal uzunluğu, subscription sayısı, idle timeout, lifetime, buffered bytes ve session revalidation sınırları bulunur. WebSocket ve Socket.IO aynı hub kontrollerini kullanır.
 
-## Action ayarları
-
-Her action authentication, CSRF, parse, resource, rate, yetki, idempotency, revision, concurrency, retry, circuit breaker, transaction, timeout, cache, realtime ve audit davranışını ayrı belirleyebilir.
+Audit redaction listesine uygulamaya özel gizli alanlar eklenebilir. Domain ile atomik olması gereken audit kaydı transaction içinde yazılmalıdır.

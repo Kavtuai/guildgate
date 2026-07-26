@@ -17,15 +17,17 @@ export async function dispatchOutbox(input: {
   claimLeaseMs?: number;
   concurrency?: number;
 }): Promise<OutboxDispatchResult> {
-  const limit = Math.max(1, input.limit ?? 100);
+  const limit = Math.min(5_000, Math.max(1, Math.floor(input.limit ?? 100)));
   const workerId = input.workerId ?? randomUUID();
+  const claimLeaseMs = Math.min(24 * 60 * 60_000, Math.max(1_000, Math.floor(input.claimLeaseMs ?? 30_000)));
+  const concurrency = Math.min(64, Math.max(1, Math.floor(input.concurrency ?? 4)));
   const records = input.store.claim
-    ? await input.store.claim(limit, workerId, input.claimLeaseMs ?? 30_000)
+    ? await input.store.claim(limit, workerId, claimLeaseMs)
     : await input.store.next(limit);
   let published = 0;
   let failed = 0;
   const queue = [...records];
-  const workers = Array.from({ length: Math.min(queue.length || 1, Math.max(1, input.concurrency ?? 4)) }, async () => {
+  const workers = Array.from({ length: Math.min(queue.length || 1, concurrency) }, async () => {
     for (;;) {
       const record = queue.shift();
       if (!record) return;
@@ -34,7 +36,8 @@ export async function dispatchOutbox(input: {
         await input.store.markPublished(record.id, (input.now ?? (() => new Date()))().toISOString());
         published += 1;
       } catch (error) {
-        await input.store.markFailed(record.id, error instanceof Error ? error.message : String(error));
+        const message = (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ").slice(0, 2_048);
+        await input.store.markFailed(record.id, message);
         failed += 1;
       }
     }

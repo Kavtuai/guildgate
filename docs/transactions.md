@@ -4,26 +4,30 @@ GuildGate separates request safety from database ownership. The application choo
 
 ## Execution order
 
-A guarded write can apply:
+A guarded write can apply session/origin/CSRF checks, parsing, owner policy, authorization, idempotency reservation, optimistic revision validation, a distributed lease, transaction work, outbox enqueue, commit, cache invalidation, audit and realtime delivery.
 
-1. session, origin and CSRF checks
-2. parsing and resource resolution
-3. owner policy, block and rate checks
-4. application or Discord authorization
-5. idempotency reservation
-6. optimistic revision validation
-7. distributed lease acquisition
-8. transaction start
-9. retry attempt and action execution
-10. transactional outbox enqueue
-11. commit hooks
-12. cache invalidation and general audit handling
+The important boundary is commit. Work required for domain correctness belongs inside the transaction. Cache, telemetry and immediate realtime delivery are observers unless the application writes them through the same transaction.
+
+## Commit finality
+
+A successful `COMMIT` is never followed by rollback behavior. `afterCommit` callbacks run after finality. When one fails:
+
+- rollback callbacks do not run
+- the domain function is not repeated
+- the adapter reports the error through `onPostCommitError` or `TransactionPostCommitError`
+- the kernel exposes a post-commit issue for operations staff
+
+Mandatory audit or delivery records should be inserted as transaction rows. A configured fail-closed audit action writes audit before commit and requires its audit store to enlist in the same transaction. Durable delivery normally uses the outbox.
+
+## Nested PostgreSQL work
+
+The PostgreSQL adapter uses `SAVEPOINT` for a nested transaction. A nested failure rolls back to that savepoint and runs only its rollback callbacks. Successful nested commit callbacks are appended to the parent and run after the outer `COMMIT`.
+
+A nested scope cannot change isolation or read-only mode because PostgreSQL applies those properties to the outer transaction.
 
 ## Optimistic revisions
 
-The client sends an expected revision. The action reads the current revision from trusted storage. A mismatch returns `REVISION_CONFLICT` before the domain update.
-
-The database update should still include the revision in its `WHERE` clause. This closes the race between reading and writing:
+The client sends an expected revision and the action reads the trusted current revision. The database update should also compare the revision:
 
 ```sql
 UPDATE guild_settings
@@ -34,25 +38,20 @@ RETURNING revision;
 
 Zero rows means another writer won.
 
-## Transactions and hooks
+## Idempotency ownership
 
-A transaction adapter receives isolation, read-only and timeout options. Hooks can run:
+An inflight record includes a reservation ID. The same key can be reclaimed after expiry, but an older worker cannot complete or delete the replacement record because `complete()` and `fail()` compare the reservation ID atomically.
 
-- before the transaction work
-- before commit
-- after commit
-- after rollback
+## Deadlines and late settlement
 
-An `afterCommit` hook must not contain work required for database correctness. Put mandatory domain records and outbox rows in the transaction.
+A deadline controls when the request receives a response. GuildGate returns a timeout at the configured boundary even if the operation ignores `AbortSignal`. The underlying settlement remains observable.
 
-## Retries
-
-Retry only failures known to be safe for the current operation. Idempotency protects repeated external requests, but a database retry also needs a transaction that fully rolls back the failed attempt.
+For an idempotent action, GuildGate keeps the reservation and lease while the bounded late-settlement observer is active. A late committed result is stored for replay; a late failure releases only the reservation still owned by that execution. `reliability.maximumLateSettlementMs` ends observation and releases ownership at the configured ceiling. Application code should forward the signal to clients that support cancellation and enforce fencing at the durable write boundary.
 
 ## Leases and fencing
 
-A renewable lease limits concurrent work. A fencing token increases each time a new owner acquires a key. Durable writes should reject a token older than the last accepted token. This prevents a paused process from committing after its lease has expired.
+A renewable lease limits concurrent work. A monotonically increasing fencing token protects the durable write after a lease expires. The database should reject a token lower than the last accepted token.
 
-## Cache and audit after commit
+## Outbox
 
-Cache invalidation and the general audit store may fail after the domain commit. GuildGate reports these failures in `meta.postCommitIssues` rather than repeating the domain operation. Mandatory audit records belong in the application transaction.
+Outbox delivery is at-least-once. A worker can publish successfully and crash before recording completion. Consumers must deduplicate by event ID.

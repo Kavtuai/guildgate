@@ -8,6 +8,38 @@ export interface RetryOptions {
   delayMs?: (error: unknown, attempt: number) => number | undefined;
 }
 
+export type DeadlineSettlement<T> =
+  | { status: "fulfilled"; value: T }
+  | { status: "rejected"; reason: unknown };
+
+export class DeadlineExceededError<T = unknown> extends GuildGateError {
+  readonly settlement: Promise<DeadlineSettlement<T>>;
+
+  constructor(settlement: Promise<DeadlineSettlement<T>>) {
+    super({ code: "UPSTREAM_TIMEOUT", status: 504, retryable: true });
+    this.name = "DeadlineExceededError";
+    this.settlement = settlement;
+  }
+}
+
+export function isDeadlineExceededError<T = unknown>(error: unknown): error is DeadlineExceededError<T> {
+  return error instanceof DeadlineExceededError;
+}
+
+export class OperationAbortedError<T = unknown> extends GuildGateError {
+  readonly settlement: Promise<DeadlineSettlement<T>>;
+
+  constructor(settlement: Promise<DeadlineSettlement<T>>, cause?: unknown) {
+    super({ code: "REQUEST_ABORTED", status: 499, retryable: true, cause });
+    this.name = "OperationAbortedError";
+    this.settlement = settlement;
+  }
+}
+
+export function isOperationAbortedError<T = unknown>(error: unknown): error is OperationAbortedError<T> {
+  return error instanceof OperationAbortedError;
+}
+
 export async function runWithDeadline<T>(input: {
   timeoutMs: number;
   parentSignal?: AbortSignal;
@@ -19,30 +51,63 @@ export async function runWithDeadline<T>(input: {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (input.parentSignal?.aborted) throw errors.requestAborted();
     const remaining = input.timeoutMs - (Date.now() - startedAt);
-    if (remaining <= 0) throw errors.timeout();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(errors.timeout()), remaining);
-    const onParentAbort = () => controller.abort(input.parentSignal?.reason);
-    input.parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+    if (remaining <= 0) throw new DeadlineExceededError(Promise.resolve({ status: "rejected", reason: errors.timeout() }));
 
+    const controller = new AbortController();
+    const timeoutError = errors.timeout();
+    const operation = Promise.resolve().then(() => input.execute(controller.signal, attempt));
+    const settlement: Promise<DeadlineSettlement<T>> = operation.then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason: unknown) => ({ status: "rejected", reason }),
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let parentAbortHandler: (() => void) | undefined;
+    const timeoutOutcome = new Promise<{ kind: "timeout" }>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: "timeout" }), remaining);
+      (timer as unknown as { unref?: () => void }).unref?.();
+    });
+    const parentOutcome = new Promise<{ kind: "parent"; reason: unknown }>((resolve) => {
+      if (!input.parentSignal) return;
+      parentAbortHandler = () => resolve({ kind: "parent", reason: input.parentSignal?.reason });
+      input.parentSignal.addEventListener("abort", parentAbortHandler, { once: true });
+    });
+
+    const outcome = await Promise.race([
+      settlement.then((result) => ({ kind: "settled" as const, result })),
+      timeoutOutcome,
+      parentOutcome,
+    ]);
+
+    if (timer) clearTimeout(timer);
+    if (parentAbortHandler) input.parentSignal?.removeEventListener("abort", parentAbortHandler);
+
+    if (outcome.kind === "timeout") {
+      controller.abort(timeoutError);
+      throw new DeadlineExceededError(settlement);
+    }
+    if (outcome.kind === "parent") {
+      controller.abort(outcome.reason);
+      throw new OperationAbortedError(settlement, outcome.reason);
+    }
+    if (outcome.result.status === "fulfilled") return outcome.result.value;
+
+    lastError = outcome.result.reason;
+    const retryable = input.retry?.shouldRetry?.(lastError, attempt) ?? defaultShouldRetry(lastError);
+    if (!retryable || attempt >= attempts) throw lastError;
+    const remainingAfterFailure = input.timeoutMs - (Date.now() - startedAt);
+    if (remainingAfterFailure <= 0) throw new DeadlineExceededError(Promise.resolve({ status: "rejected", reason: lastError }));
+    const configuredDelay = input.retry?.delayMs?.(lastError, attempt);
+    const delay = configuredDelay === undefined
+      ? jitteredDelay(input.retry!, attempt)
+      : Math.max(0, configuredDelay);
     try {
-      return await input.execute(controller.signal, attempt);
-    } catch (error) {
-      lastError = error;
-      if (controller.signal.aborted && !input.parentSignal?.aborted) throw errors.timeout();
-      const retryable = input.retry?.shouldRetry?.(error, attempt) ?? defaultShouldRetry(error);
-      if (!retryable || attempt >= attempts) throw error;
-      const remainingAfterFailure = input.timeoutMs - (Date.now() - startedAt);
-      if (remainingAfterFailure <= 0) throw errors.timeout();
-      const configuredDelay = input.retry?.delayMs?.(error, attempt);
-      const delay = configuredDelay === undefined
-        ? jitteredDelay(input.retry!, attempt)
-        : Math.max(0, configuredDelay);
       await sleep(Math.min(delay, remainingAfterFailure), input.parentSignal);
-    } finally {
-      clearTimeout(timer);
-      input.parentSignal?.removeEventListener("abort", onParentAbort);
+    } catch {
+      if (input.parentSignal?.aborted) throw errors.requestAborted();
+      throw lastError;
     }
   }
 
@@ -61,12 +126,21 @@ function jitteredDelay(options: RetryOptions, attempt: number): number {
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason);
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(timer);
+    if (signal?.aborted) {
       reject(signal.reason);
-    }, { once: true });
+      return;
+    }
+    const finish = () => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

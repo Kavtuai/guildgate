@@ -26,6 +26,57 @@ jobs:
       - run: npm run security:verify
       - run: npm run pack:check
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run test:coverage
+
+  service-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: guildgate
+          POSTGRES_PASSWORD: guildgate
+          POSTGRES_DB: guildgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guildgate -d guildgate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      GUILDGATE_SERVICE_TESTS: "1"
+      POSTGRES_URL: postgresql://guildgate:guildgate@127.0.0.1:5432/guildgate
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm install --no-save pg@8.22.0 redis@6.1.0
+      - run: npm run build
+      - run: node --test tests/service-integration.test.mjs
+
   load-harness:
     runs-on: ubuntu-latest
     steps:

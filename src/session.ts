@@ -25,8 +25,12 @@ export class SessionManager {
     const now = this.options.clock.now();
     const token = randomToken();
     const session = this.buildRecord(token, input, now);
-    await this.options.store.set(session);
-    await this.enforceSessionLimit(input.userId, session.idHash);
+    if (this.options.store.create) {
+      await this.options.store.create(session, this.options.maximumSessionsPerUser);
+    } else {
+      await this.options.store.set(session);
+      await this.enforceSessionLimit(input.userId, session.idHash);
+    }
     return { token, session };
   }
 
@@ -36,7 +40,10 @@ export class SessionManager {
     const idHash = sha256(token);
     const session = await this.options.store.get(idHash);
     if (!session) return { session: null, clearCookie: true };
-    if (session.revokedAt) throw errors.sessionRevoked();
+    if (session.revokedAt) {
+      await this.options.store.delete(idHash);
+      throw errors.sessionRevoked();
+    }
     if (new Date(session.expiresAt) <= now || new Date(session.idleExpiresAt) <= now) {
       await this.options.store.delete(idHash);
       throw errors.sessionExpired();
