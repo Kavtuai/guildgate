@@ -77,8 +77,11 @@ export function createOperatorService(input: {
       return targets.length;
     },
     async listAudit(filter?: { userId?: string; action?: string; cursor?: string; limit?: number }): Promise<Page<AuditEvent>> {
-      if (!input.kernel.config.stores.audit.list) return { items: [] };
-      const rows = await input.kernel.config.stores.audit.list({ userId: filter?.userId, action: filter?.action, limit: Math.min(500, (filter?.limit ?? 50) + 1) });
+      const store = input.kernel.config.stores.audit;
+      const limit = Math.min(200, Math.max(1, filter?.limit ?? 50));
+      if (store.listPage) return store.listPage({ ...filter, limit });
+      if (!store.list) return { items: [] };
+      const rows = await store.list({ userId: filter?.userId, action: filter?.action, limit: 500 });
       return paginate(rows, filter, (row) => row.id);
     },
     async inspectPolicies(): Promise<{

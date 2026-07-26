@@ -1,23 +1,27 @@
 # Realtime adapter'ları
 
-Realtime hub oturum, origin, kanal yetkisi, mesaj sınırı, abonelik sınırı ve iptal denetimini yapar. Transport adapter'ı seçilen ağ kütüphanesine bağlanır.
+Realtime hub session doğrulama, exact-origin, kanal yetkisi, mesaj boyutu, istemci rate limiti, idle activity, subscription sınırı ve yavaş istemci kontrolünü yürütür. Transport seçilen ağ kütüphanesine bağlanır.
 
 ## WebSocket
 
-`attachWebSocket()` ping/pong destekleyen socket'lerde heartbeat uygular. Abonelik mesajı kanal ve isteğe bağlı resume sequence taşır. Her kanal için uygulamanın yetki callback'i çağrılır.
+`attachWebSocket()` ping/pong heartbeat, yetkili subscribe/unsubscribe ve sequence replay desteği verir. Geçersiz JSON, büyük mesaj, rate aşımı ve backpressure uygun close koduyla bağlantıyı kapatır.
 
 ## Socket.IO
 
-`attachSocketIo()` handshake içindeki oturum ve origin değerlerini kullanabilir. Abonelik, abonelikten çıkma, replay ve kapanış olaylarını belirli GuildGate event adlarıyla taşır.
+`attachSocketIo()` session ve origin değerini handshake veya açık input üzerinden alır. Subscribe, unsubscribe ve heartbeat event'leri serialize edilip `hub.acceptMessage()` üzerinden geçirilir; WebSocket ile aynı payload, rate ve activity kuralları uygulanır.
+
+Acknowledgement cevabı `{ ok, channel }` veya sabit hata kodu döndürür. Replay `guildgate:replay` event'iyle iletilir. Transport writable değilse hub istemciyi yavaş kabul edip bağlantıyı kapatır.
 
 ## SSE
 
-`createServerSentEventStream()` SSE frame'leri üretir. Kuyruk sınırı aşılırsa stream kapanır. HTTP isteği stream açılmadan önce doğrulanmalıdır.
+`createServerSentEventStream()` bounded kuyrukla SSE frame üretir. Kuyruk sınırı aşılırsa stream kapanır. HTTP isteğini stream açılmadan önce authenticate ve authorize edin.
 
-## Sequence ve tekrar bağlanma
+## Teslimat ve iptal
 
-Kanal sequence değeri o kanal içindeki sıralamayı gösterir. İstemci son değeri saklar ve tekrar bağlanırken gönderir. Sunucu belirlenen limite kadar sonraki olayları oynatır.
+Sequence yalnızca kanal içinde sıralama verir. Reconnect yapan istemci son sequence değerini gönderir. Outbox teslimatı at-least-once'tur; worker ve istemci consumer event ID üzerinden deduplication yapmalıdır.
 
-## Çoklu instance iptali
+Çoklu instance sisteminde revocation bus, iptal edilen session hash'ini bütün instance'lara taşır. Periyodik session revalidation ikinci güvenlik katmanıdır.
 
-Session revocation bus sözleşmesi iptal edilen session hash'ini diğer instance'lara iletir. Her instance kendi açık bağlantılarını kapatır.
+## Hata ve yarış durumu yönetimi
+
+Asenkron authorization tamamlandıktan sonra subscription kapasitesi yeniden kontrol edilir. Send hatası veren bağlantı kapatılıp hub kaydından çıkarılır. Session revocation listener'ları birbirinden izole edilir; bir listener hatası diğerlerinin mesajı işlemesini engellemez. Outbox dispatch batch, claim lease ve concurrency sınırlarını uygular; kaydedilen hata metnini temizleyip kısaltır.

@@ -41,6 +41,7 @@ export function createGuildGateTestHarness(overrides?: Partial<GuildGateConfig>)
     transactions,
     telemetry: overrides?.telemetry,
     audit: overrides?.audit,
+    reliability: overrides?.reliability,
     clock: overrides?.clock,
   };
   const kernel = createGuildGate(config);

@@ -1,76 +1,54 @@
-# Release plan and completion status
+# Roadmap
 
-GuildGate tracks work by public capability. Version `1.0.0` contains the safe-write, realtime, adapter, operator, monitoring and analytics work planned for the first stable contract line.
+GuildGate develops around public capabilities rather than broad promises. Version `1.1.0` completes the first reliability-hardening cycle for the stable contract line.
 
-## 0.1.x — Core security contracts
+## Completed in 1.1.0
 
-Completed and published through `0.1.1`:
+### Transaction and deadline correctness
 
-- server-side session lifecycle
-- Discord OAuth state and browser binding
-- exact-origin and CSRF validation
-- application-owned storage interfaces
-- memory and Redis stores
-- Fastify and Express handlers
-- Discord permission helpers
-- audit, cache, rate limit, idempotency and basic outbox behavior
+- final commit separated from post-commit observers
+- nested PostgreSQL savepoints
+- late-settlement tracking after a strict response deadline
+- bounded lease and reservation retention during late settlement
+- committed idempotent result replay after timeout
+- transactional fail-closed audit persistence
 
-## 0.2.0 — Reliable writes
+### Ownership and shared-store invariants
 
-Completed in the `1.0.0` code line:
+- reservation-token compare-and-set idempotency
+- atomic session caps in memory, Redis and PostgreSQL
+- atomic Redis cache retagging and tag-index TTLs
+- opaque audit cursor pagination
+- serialized PostgreSQL rate-limit bucket updates
+- distributed OAuth refresh single-flight
 
-- idempotency reservation, replay and payload conflict checks
-- optimistic revision checks
-- transaction adapters with commit and rollback hooks
-- tag-based cache invalidation
-- renewable distributed leases and fencing tokens
-- deadlines, retry policies and circuit breakers
-- owner maintenance and block controls
-- session listing, revocation and owner API actions
+### Realtime parity
 
-## 0.3.0 — Realtime delivery
+- shared WebSocket and Socket.IO payload/rate/activity controls
+- Socket.IO acknowledgements and replay
+- slow-client detection and session revalidation
+- authorization-race capacity checks and failed-connection cleanup
+- isolated session revocation listeners
 
-Completed in the `1.0.0` code line:
+### Verification
 
-- WebSocket-compatible adapter
-- Socket.IO-compatible adapter
-- Server-Sent Events stream
-- authorization for each channel subscription
-- heartbeat and session revalidation
-- session revocation disconnect and broadcast bus contract
-- byte and queue backpressure limits
-- per-channel event sequences and resume cursors
-- claim-based outbox workers for multiple instances
+- 76 deterministic tests
+- PostgreSQL and Redis live-service integration tests in CI
+- Node.js coverage collection with release-blocking thresholds
+- CodeQL, package verification, secret scanning and load regression
+- English and Turkish migration and operations guidance
 
-## 0.4.0 — Ecosystem and operations
+## Stable maintenance line
 
-Completed in the `1.0.0` code line:
+The next releases focus on compatibility and evidence:
 
-- Fastify, Express and Hono handlers
-- PostgreSQL storage and migration SQL
-- Redis short-lived stores
-- discord.js-compatible adapter
-- memory testing harness and adapter contract runner
-- doctor, writing-check and migration commands
-- OpenTelemetry bridge hooks
-- owner policy, rate policy, audit and session inspection actions
-- server and Discord bot status sampling
-- time-series analytics, summaries, SVG charts and table models
+- database migration compatibility tests across supported PostgreSQL majors
+- Redis client compatibility matrix
+- richer OpenTelemetry semantic conventions
+- fault-injection tests for network partitions and worker termination
+- signed release evidence and reproducible package metadata
+- independent external security review when a reviewer is commissioned
 
-## 1.0.0 — Stable contracts
+## Not planned for the core package
 
-Completed release gates:
-
-- stable action, store and realtime contract markers
-- documented migration and deprecation policy
-- threat model and private security response process
-- maintainer security audit with closed release-blocking findings
-- regression coverage for audit findings
-- Node.js 22 and 24 CI targets
-- package, installed-consumer and CLI checks
-- local concurrency and latency harness with stated limits
-- OIDC trusted publishing and npm provenance
-
-An independent assessment is recommended for deployments that need third-party assurance. The handoff scope is in `EXTERNAL_REVIEW_GUIDE.md`. It is not presented as work already performed.
-
-Future minor releases will focus on measured adapter improvements, more live integration fixtures and operational tooling without changing the `1.0` contract line unnecessarily.
+GuildGate will not become a dashboard UI framework, Discord command framework or application database owner. UI components, product-specific authorization and domain schemas remain in the consuming application.

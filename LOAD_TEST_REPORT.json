@@ -1,7 +1,7 @@
 {
   "package": "@kavtuai/guildgate",
-  "version": "1.0.0",
-  "generatedAt": "2026-07-26T13:30:04.064Z",
+  "version": "1.1.0",
+  "generatedAt": "2026-07-26T17:27:28.200Z",
   "runtime": {
     "node": "v24.12.0",
     "platform": "win32",
@@ -13,11 +13,11 @@
   "operations": 5000,
   "domainExecutions": 5000,
   "failures": 0,
-  "durationMs": 590.8743,
-  "throughputPerSecond": 8462.036680221157,
-  "p50Ms": 1.7364000000000033,
-  "p95Ms": 2.739599999999996,
-  "p99Ms": 6.2442999999999955,
+  "durationMs": 491.37080000000003,
+  "throughputPerSecond": 10175.614830999319,
+  "p50Ms": 1.4256999999999778,
+  "p95Ms": 2.418900000000008,
+  "p99Ms": 3.594699999999989,
   "limitations": [
     "No network, Redis, PostgreSQL or Discord request is included.",
     "Numbers are useful for regression comparison on the same class of machine.",

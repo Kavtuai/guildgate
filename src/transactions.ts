@@ -8,6 +8,7 @@ export interface TransactionOptions {
   readOnly?: boolean;
   timeoutMs?: number;
   name?: string;
+  onPostCommitError?: (error: unknown, callbackIndex: number) => void | Promise<void>;
 }
 
 export interface TransactionScope {
@@ -36,6 +37,25 @@ export interface OptimisticRevisionPolicy<I> {
   resource?: (input: I) => string;
 }
 
+export class TransactionPostCommitError<T = unknown> extends Error {
+  readonly committed = true;
+  readonly result: T;
+  readonly callbackErrors: readonly unknown[];
+
+  constructor(result: T, callbackErrors: readonly unknown[]) {
+    super("The transaction committed, but one or more afterCommit callbacks failed", {
+      cause: callbackErrors[0],
+    });
+    this.name = "TransactionPostCommitError";
+    this.result = result;
+    this.callbackErrors = [...callbackErrors];
+  }
+}
+
+export function isTransactionPostCommitError(error: unknown): error is TransactionPostCommitError {
+  return error instanceof TransactionPostCommitError;
+}
+
 export async function assertOptimisticRevision<I>(policy: OptimisticRevisionPolicy<I>, input: I): Promise<void> {
   const expected = policy.expected(input);
   const current = await policy.current(input);
@@ -56,7 +76,11 @@ export function createMemoryTransactionAdapter(): TransactionAdapter {
       const scope: TransactionScope = {
         id: randomUUID(),
         backend: "memory",
-        metadata: Object.freeze({ isolation: options.isolation ?? "read-committed", readOnly: options.readOnly ?? false }),
+        metadata: Object.freeze({
+          isolation: options.isolation ?? "read-committed",
+          readOnly: options.readOnly ?? false,
+          name: options.name ?? "transaction",
+        }),
         afterCommit(callback) {
           afterCommit.push(callback);
         },
@@ -65,14 +89,52 @@ export function createMemoryTransactionAdapter(): TransactionAdapter {
         },
       };
 
+      let result: T;
       try {
-        const result = await work(scope);
-        for (const callback of afterCommit) await callback();
-        return result;
+        result = await work(scope);
       } catch (error) {
-        for (const callback of afterRollback) await callback(error);
+        await runRollbackCallbacks(afterRollback, error);
         throw error;
       }
+
+      await runPostCommitCallbacks(afterCommit, options, result);
+      return result;
     },
   };
+}
+
+export async function runPostCommitCallbacks<T>(
+  callbacks: ReadonlyArray<() => void | Promise<void>>,
+  options: TransactionOptions,
+  result: T,
+): Promise<void> {
+  const failures: unknown[] = [];
+
+  for (let index = 0; index < callbacks.length; index += 1) {
+    const callback = callbacks[index];
+    if (!callback) continue;
+    try {
+      await callback();
+    } catch (error) {
+      failures.push(error);
+      if (options.onPostCommitError) {
+        try {
+          await options.onPostCommitError(error, index);
+        } catch (reportError) {
+          failures.push(reportError);
+        }
+      }
+    }
+  }
+
+  if (failures.length && !options.onPostCommitError) {
+    throw new TransactionPostCommitError(result, failures);
+  }
+}
+
+export async function runRollbackCallbacks(
+  callbacks: ReadonlyArray<(error: unknown) => void | Promise<void>>,
+  error: unknown,
+): Promise<void> {
+  await Promise.allSettled(callbacks.map((callback) => callback(error)));
 }

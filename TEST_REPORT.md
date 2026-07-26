@@ -1,106 +1,115 @@
 # Test report
 
 Date: 2026-07-26
-Package: `@kavtuai/guildgate@1.0.0`
+Package: `@kavtuai/guildgate@1.1.0`
 
 ## Toolchain
 
-- Node.js: 22.16.0
+- Local final verification: Node.js 24.12.0
 - TypeScript: 5.8.3
-- Platform: Linux x64
+- Platform: Windows x64
+- CI matrix: Node.js 22 and 24
 - Runtime dependencies in the core package: 0
+- Public export paths: 16
+- CLI targets: 3
 
 ## Release verification
 
-`npm run release:verify` completed successfully. The task ran:
+`npm run release:verify` completed successfully from a clean build. It ran strict TypeScript checking, the writing policy, deterministic tests, enforced coverage thresholds, source and package security checks, the in-memory load harness and npm package inspection.
 
-- strict TypeScript checking
-- a clean TypeScript build
-- repository writing rules
-- 39 automated behavior and regression tests
-- package security verification
-- the local concurrency and latency harness
-- npm package dry-run and file inspection
-
-The security verifier checked 45 TypeScript source files, 16 public export paths, three CLI targets, OIDC release settings and common committed-credential patterns.
+The security verifier checked 46 TypeScript source files, all 16 public export paths, all three CLI targets, the OIDC release workflow, the adapter contract version and committed credential patterns.
 
 ## Automated test result
 
+The repository test command loads the two live-service test definitions but skips them unless service credentials are present.
+
 | Result | Count |
 |---|---:|
-| Passed | 39 |
+| Passed | 76 |
 | Failed | 0 |
-| Skipped | 0 |
+| Skipped locally | 2 |
 | Cancelled | 0 |
 
-Coverage includes:
+The deterministic suite covers:
 
-- session and CSRF enforcement
-- OAuth state binding and single use
-- idempotency replay and conflicting payloads
-- optimistic revision rejection
-- transaction commit, rollback and hooks
-- retry, deadline and circuit-breaker behavior
-- renewable leases and fencing tokens
-- cache tag invalidation
-- owner maintenance, blocks, policy inspection and session revocation
-- Discord permission calculation and discord.js-compatible authorization
-- Fastify, Express and Hono compatibility boundaries
-- authorized WebSocket replay, SSE behavior, revocation and heartbeat
-- event sequencing, resume cursors and claimed outbox work
-- PostgreSQL migration and transaction behavior
-- Redis lease scripts
-- status monitoring, analytics buckets, SVG charts and table models
-- OpenTelemetry bridge callbacks
-- CLI help and installed-directory behavior
+- session, cookie, exact-origin and CSRF enforcement
+- OAuth state binding, encrypted credentials, distributed refresh single-flight and production URL rejection
+- idempotency ownership, renewal, replay, changed payloads and late completion
+- hard response deadlines, cancellation and bounded late settlement
+- optimistic revisions, renewable leases and fencing tokens
+- transaction finality, nested PostgreSQL savepoints and fail-closed audit ordering
+- atomic memory session caps and store contract invariants
+- PostgreSQL rate-limit serialization and Redis atomic scripts through adapter regression tests
+- cache stampede handling, fallback persistence, tag retagging and expiry
+- opaque audit cursor paging and malformed cursor rejection
+- Discord permission calculation, guild authorization and discord.js adapter behavior
+- Fastify, Express and Hono response boundaries
+- WebSocket, Socket.IO and SSE authorization, replay, rate, size, activity and backpressure controls
+- subscription authorization races, broken connection cleanup and revocation listener isolation
+- sequenced events, outbox claims, worker overlap prevention and sanitized publisher errors
+- operator policy controls, monitoring, analytics, SVG safety and telemetry bridges
+- CLI portability and installed-directory behavior
 
-Security regression coverage includes hidden error details, secret redaction, circular serialization, SVG injection, denied replay, malformed realtime JSON, unsafe action configuration, generic retry behavior, malformed encrypted tokens, Redis fencing and PostgreSQL idempotency races.
+## Repeated stability pass
+
+After the original timing-sensitive assertion was identified under coverage instrumentation, the idempotency-renewal test was rewritten around a controlled execution gate. It now verifies ownership after the original TTL has elapsed, releases the domain operation deliberately and polls the public replay result within a bounded deadline.
+
+The focused reliability suite was then executed five consecutive times. Every run reported 33 passed, 0 failed, 0 skipped and 0 cancelled. The complete release verification was run afterward and reported 76 deterministic tests passed, 0 failed and two live-service definitions skipped locally.
+
+Coverage test files execute with `--test-concurrency=1`. This keeps instrumentation overhead from turning lease-renewal behavior into a machine-speed-dependent assertion.
+
+## Coverage
+
+`npm run test:coverage` executes the 76 deterministic tests through Node.js native coverage. Release verification fails below 80% lines, 70% branches or 70% functions.
+
+| Metric | Result | Required |
+|---|---:|---:|
+| Lines | 82.25% | 80% |
+| Branches | 73.57% | 70% |
+| Functions | 73.30% | 70% |
+
+## Live-service test definitions
+
+`tests/service-integration.test.mjs` contains two tests designed for disposable services in GitHub Actions:
+
+- PostgreSQL 17: migration, root and nested transaction behavior, idempotency ownership, concurrent session cap, exact concurrent rate limiting and full audit traversal
+- Redis 8: atomic session cap, cache retagging and TTL behavior, reservation renewal and stale-owner rejection
+
+They are enabled with `GUILDGATE_SERVICE_TESTS=1`, `POSTGRES_URL` and `REDIS_URL`. The local artifact container did not provide PostgreSQL or Redis daemons, so these two definitions were skipped locally rather than represented as live-service passes.
 
 ## Installed consumer test
 
-A generated `kavtuai-guildgate-1.0.0.tgz` was installed into an empty project with lifecycle scripts disabled.
+A generated `kavtuai-guildgate-1.1.0.tgz` was installed into an empty project with lifecycle scripts disabled.
 
 Verified results:
 
 - all 16 public package subpaths imported
-- `createGuildGate` and the testing harness were available
-- an idempotent guarded write executed once and replayed its first result
-- `guildgate-doctor --help` passed
-- `guildgate-writing-check --help` passed
-- `guildgate-migration --help` passed
+- all three CLI `--help` commands exited successfully
+- the testing harness created a session
+- an idempotent guarded write executed once and replayed its stored result
 
 Consumer result: `CONSUMER_TEST_PASSED`.
 
 ## Load reference
 
-The latest local run executed 5,000 in-memory guarded writes with concurrency 10.
+The final release-verification run executed 5,000 in-memory guarded writes with concurrency 16.
 
 | Measurement | Result |
 |---|---:|
 | Domain executions | 5,000 |
 | Failures | 0 |
-| Duration | 274.59 ms |
-| Throughput | 18,208.92 operations/second |
-| p50 | 0.48 ms |
-| p95 | 1.10 ms |
-| p99 | 2.30 ms |
+| Duration | 604.254 ms |
+| Throughput | 8,274.67 operations/second |
+| p50 | 1.69 ms |
+| p95 | 3.18 ms |
+| p99 | 5.58 ms |
 
-The scenario contains no network, Redis, PostgreSQL or Discord request. It is a regression baseline, not a production capacity claim.
+This scenario contains no network, Redis, PostgreSQL or Discord request. It is a same-machine regression baseline, not a production capacity commitment.
 
-## Live Discord path already exercised
+## Package inspection
 
-The published `0.1.1` package was used in a separate Discord lab application. That run verified bot login, guild command registration, Discord OAuth callback, session creation, dashboard reads, owner maintenance actions and logout. The lab also exposed a Fastify type boundary issue, which was corrected in the lab adapter.
+The npm dry-run included 241 files. The core package has no runtime dependencies. Build output, declaration files, source maps, documentation, examples, reports and CLI targets were included; `.env`, repository metadata, local `node_modules`, nested archives and credentials were excluded from the final source archive.
 
-## Deployment tests left to the application
+## Review boundary
 
-The source package cannot reproduce every target environment. Before production use, test:
-
-- live Redis with at least two application instances
-- live PostgreSQL migrations, fencing-aware writes and concurrent outbox workers
-- real Discord permission loss, role changes and bot removal
-- network interruption during a database transaction
-- long-running WebSocket and SSE connections with slow clients
-- the chosen OpenTelemetry SDK and exporter
-- proxy trust, TLS, cookies, retention and backup behavior
-
-The maintainer security review is recorded in `SECURITY_AUDIT.md`. It is not described as an independent third-party audit.
+This report records maintainer verification, not an independent third-party certification. A consuming application still needs deployment tests for its proxy, TLS, database permissions, Discord configuration, custom authorization, retention, backups and incident response.

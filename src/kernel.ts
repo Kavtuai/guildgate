@@ -4,7 +4,13 @@ import { CacheManager } from "./cache.js";
 import { hmacSha256, redactValue, sha256, stableStringify } from "./crypto.js";
 import { asGuildGateError, errors, GuildGateError } from "./errors.js";
 import { messageFor, resolveLocale } from "./i18n.js";
-import { CircuitBreaker, runWithDeadline } from "./resilience.js";
+import {
+  CircuitBreaker,
+  isDeadlineExceededError,
+  isOperationAbortedError,
+  runWithDeadline,
+  type DeadlineSettlement,
+} from "./resilience.js";
 import { DistributedLockManager, type HeldLock } from "./locks.js";
 import { assertOptimisticRevision, type TransactionAdapter, type TransactionScope } from "./transactions.js";
 import type { TelemetryHooks, TelemetrySpan } from "./telemetry.js";
@@ -12,6 +18,7 @@ import {
   assertAllowedOrigin,
   createCsrfService,
   isUnsafeMethod,
+  isLoopbackOrUnspecifiedHost,
   serializeClearedCookie,
   serializeSessionCookie,
   validateAllowedOrigins,
@@ -71,6 +78,9 @@ export interface GuildGateConfig {
     enabled?: boolean;
     redactKeys?: string[];
     failClosedActions?: string[];
+  };
+  reliability?: {
+    maximumLateSettlementMs?: number;
   };
   clock?: Clock;
 }
@@ -134,6 +144,7 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     ...(config.audit?.redactKeys ?? []).map((key) => key.toLowerCase()),
   ]);
   const auditFailClosed = new Set(config.audit?.failClosedActions ?? []);
+  const maximumLateSettlementMs = config.reliability?.maximumLateSettlementMs ?? 5 * 60_000;
   const lockManager = new DistributedLockManager(config.stores.locks);
   const circuitBreakers = new Map<string, CircuitBreaker>();
 
@@ -154,12 +165,19 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     let rateLimitMeta: RateLimitHitResult | undefined;
     let heldLock: HeldLock | undefined;
     let idempotencyStoreKey: string | undefined;
+    let idempotencyReservationId: string | undefined;
     let idempotencyCompleted = false;
+    let idempotencyOwnershipLost = false;
+    let idempotencyRenewalRunning = false;
+    let idempotencyRenewalTimer: ReturnType<typeof setInterval> | undefined;
+    const idempotencyAbortController = new AbortController();
     const postCommitIssues: ActionExecutionMeta["postCommitIssues"] = [];
     let contextBase: Omit<ActionContext, "signal" | "attempt" | "transaction" | "fencingToken"> | undefined;
     let telemetrySpan: TelemetrySpan | undefined;
     let retryCount = 0;
     let transactionalOutboxEnqueued = false;
+    let successAuditWritten = false;
+    let deferLockRelease = false;
 
     const meta = (): ActionExecutionMeta => ({
       requestId,
@@ -170,6 +188,89 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
       clearSessionCookie,
       postCommitIssues: postCommitIssues.length ? [...postCommitIssues] : undefined,
     });
+
+    const stopIdempotencyRenewal = (): void => {
+      if (idempotencyRenewalTimer) clearInterval(idempotencyRenewalTimer);
+      idempotencyRenewalTimer = undefined;
+    };
+
+    const startIdempotencyRenewal = (ttlMs: number): void => {
+      const renew = config.stores.idempotency.renew;
+      if (!renew || !idempotencyStoreKey || !idempotencyReservationId) return;
+      const intervalMs = Math.max(5, Math.min(30_000, Math.floor(ttlMs / 3)));
+      idempotencyRenewalTimer = setInterval(() => {
+        if (idempotencyRenewalRunning || idempotencyCompleted || idempotencyOwnershipLost) return;
+        idempotencyRenewalRunning = true;
+        const expiresAtMs = Math.max(clock.now().getTime(), Date.now()) + ttlMs;
+        void renew(idempotencyStoreKey!, expiresAtMs, idempotencyReservationId!)
+          .then((renewed) => {
+            if (renewed) return;
+            idempotencyOwnershipLost = true;
+            idempotencyAbortController.abort(errors.idempotencyReservationLost());
+          })
+          .catch(() => {
+            idempotencyOwnershipLost = true;
+            idempotencyAbortController.abort(errors.idempotencyReservationLost());
+          })
+          .finally(() => {
+            idempotencyRenewalRunning = false;
+          });
+      }, intervalMs);
+      (idempotencyRenewalTimer as unknown as { unref?: () => void }).unref?.();
+    };
+
+    const finalizeCommittedResult = async (result: O): Promise<void> => {
+      if (idempotencyStoreKey && idempotencyReservationId && definition.idempotency && !idempotencyCompleted) {
+        const completed = await config.stores.idempotency.complete(
+          idempotencyStoreKey,
+          result,
+          clock.now().getTime() + definition.idempotency.ttlMs,
+          idempotencyReservationId,
+        );
+        if (completed === false) throw errors.idempotencyReservationLost();
+        idempotencyCompleted = true;
+        stopIdempotencyRenewal();
+      }
+
+      try {
+        const tags = definition.cache?.invalidateTags?.(result, parsedInput) ?? [];
+        if (tags.length) await cache.invalidateTags(tags);
+      } catch (cacheError) {
+        postCommitIssues.push({ stage: "cache", code: asGuildGateError(cacheError).code });
+      }
+
+      try {
+        if (definition.realtime) {
+          const events = buildRealtimeEvents(definition, result, parsedInput, clock.now());
+          for (const event of events) {
+            if (definition.realtime.delivery === "outbox") {
+              if (!transactionalOutboxEnqueued) {
+                await config.stores.outbox.enqueue({ id: event.id, event, createdAt: event.timestamp, attempts: 0 });
+              }
+            } else if (config.realtime) {
+              await config.realtime.publish(event);
+            }
+          }
+        }
+      } catch (realtimeError) {
+        postCommitIssues.push({ stage: "realtime", code: asGuildGateError(realtimeError).code });
+      }
+
+      if (!successAuditWritten) {
+        try {
+          await writeAudit({
+            definition,
+            context: contextBase!,
+            resource,
+            result: "success",
+            changes: definition.audit?.changes?.(result, parsedInput),
+            durationMs: Date.now() - startedAt,
+          });
+        } catch (auditError) {
+          postCommitIssues.push({ stage: "audit", code: asGuildGateError(auditError).code });
+        }
+      }
+    };
 
     try {
       const authMode = definition.authentication ?? "required";
@@ -244,10 +345,12 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
           const scope = definition.idempotency.scope?.(contextBase, parsedInput)
             ?? `${session?.userId ?? request.ip ?? "anonymous"}:${definition.name}`;
           idempotencyStoreKey = `guildgate:idempotency:${scope}:${key}`;
+          idempotencyReservationId = randomUUID();
           const nowMs = clock.now().getTime();
           const begin = await config.stores.idempotency.begin({
             key: idempotencyStoreKey,
             requestHash: sha256(stableStringify(parsedInput)),
+            reservationId: idempotencyReservationId,
             state: "inflight",
             createdAtMs: nowMs,
             expiresAtMs: nowMs + definition.idempotency.ttlMs,
@@ -257,6 +360,7 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
           }
           if (begin.status === "conflict") throw errors.idempotencyConflict();
           if (begin.status === "inflight") throw errors.idempotencyInflight();
+          startIdempotencyRenewal(definition.idempotency.ttlMs);
         }
       }
 
@@ -290,7 +394,7 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
         timeoutMs: definition.timeoutMs ?? 8_000,
         execute: async (deadlineSignal, attempt) => {
           retryCount = Math.max(retryCount, attempt - 1);
-          const signal = combineSignals(deadlineSignal, heldLock?.signal);
+          const signal = combineSignals(deadlineSignal, heldLock?.signal, idempotencyAbortController.signal);
           const executeWithinTransaction = async (transaction?: TransactionScope): Promise<O> => {
             const scope = transaction ?? createNoopTransactionScope();
             if (transaction && definition.transaction?.hooks?.afterRollback) {
@@ -305,12 +409,25 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
               fencingToken: heldLock?.lease.fencingToken,
             }, parsedInput);
             heldLock?.assertOwned();
+            if (idempotencyOwnershipLost) throw errors.idempotencyReservationLost();
             if (definition.realtime?.delivery === "outbox") {
               const events = buildRealtimeEvents(definition, result, parsedInput, clock.now());
               for (const event of events) {
                 await config.stores.outbox.enqueue({ id: event.id, event, createdAt: event.timestamp, attempts: 0 });
               }
               transactionalOutboxEnqueued = true;
+            }
+            if (auditFailClosed.has(definition.name)) {
+              await writeAudit({
+                definition,
+                context: contextBase!,
+                resource,
+                result: "success",
+                changes: definition.audit?.changes?.(result, parsedInput),
+                durationMs: Date.now() - startedAt,
+              });
+              if (transaction) transaction.afterCommit(() => { successAuditWritten = true; });
+              else successAuditWritten = true;
             }
             await definition.transaction?.hooks?.beforeCommit?.(scope, result, parsedInput);
             if (transaction && definition.transaction?.hooks?.afterCommit) {
@@ -324,10 +441,21 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
               if (!config.transactions) {
                 if (definition.transaction.required !== false) throw errors.configuration(`Action ${definition.name} requires a transaction adapter`);
                 const result = await executeWithinTransaction();
-                await definition.transaction.hooks?.afterCommit?.(result, parsedInput);
+                try {
+                  await definition.transaction.hooks?.afterCommit?.(result, parsedInput);
+                } catch (hookError) {
+                  postCommitIssues.push({ stage: "transaction-hook", code: asGuildGateError(hookError).code });
+                }
                 return result;
               }
-              return config.transactions.run(definition.transaction, executeWithinTransaction);
+              const configuredReporter = definition.transaction.onPostCommitError;
+              return config.transactions.run({
+                ...definition.transaction,
+                async onPostCommitError(error, callbackIndex) {
+                  postCommitIssues.push({ stage: "transaction-hook", code: asGuildGateError(error).code });
+                  await configuredReporter?.(error, callbackIndex);
+                },
+              }, executeWithinTransaction);
             }
             return executeWithinTransaction();
           };
@@ -349,55 +477,7 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
       if (request.signal) deadlineInput.parentSignal = request.signal;
       const result = await runWithDeadline(deadlineInput);
 
-      // Once execute() returns, the application may already have committed its write.
-      // Complete idempotency before non-transactional post-commit work so a retry cannot
-      // repeat the domain operation after cache, realtime, or general audit failure.
-      if (idempotencyStoreKey && definition.idempotency) {
-        await config.stores.idempotency.complete(
-          idempotencyStoreKey,
-          result,
-          clock.now().getTime() + definition.idempotency.ttlMs,
-        );
-        idempotencyCompleted = true;
-      }
-
-      try {
-        const tags = definition.cache?.invalidateTags?.(result, parsedInput) ?? [];
-        if (tags.length) await cache.invalidateTags(tags);
-      } catch (cacheError) {
-        postCommitIssues.push({ stage: "cache", code: asGuildGateError(cacheError).code });
-      }
-
-      try {
-        if (definition.realtime) {
-          const events = buildRealtimeEvents(definition, result, parsedInput, clock.now());
-          for (const event of events) {
-            if (definition.realtime.delivery === "outbox") {
-              if (!transactionalOutboxEnqueued) {
-                await config.stores.outbox.enqueue({ id: event.id, event, createdAt: event.timestamp, attempts: 0 });
-              }
-            } else if (config.realtime) {
-              await config.realtime.publish(event);
-            }
-          }
-        }
-      } catch (realtimeError) {
-        postCommitIssues.push({ stage: "realtime", code: asGuildGateError(realtimeError).code });
-      }
-
-      try {
-        await writeAudit({
-          definition,
-          context: contextBase,
-          resource,
-          result: "success",
-          changes: definition.audit?.changes?.(result, parsedInput),
-          durationMs: Date.now() - startedAt,
-        });
-      } catch (auditError) {
-        postCommitIssues.push({ stage: "audit", code: asGuildGateError(auditError).code });
-        if (auditFailClosed.has(definition.name)) throw auditError;
-      }
+      await finalizeCommittedResult(result);
 
       await config.telemetry?.actionFinished?.({
         action: definition.name,
@@ -411,10 +491,31 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
       telemetrySpan?.end();
       return { ok: true, data: result, meta: meta() };
     } catch (unknownError) {
-      if (idempotencyStoreKey && !idempotencyCompleted) {
-        await config.stores.idempotency.fail(idempotencyStoreKey).catch(() => undefined);
+      if (isDeadlineExceededError<O>(unknownError) || isOperationAbortedError<O>(unknownError)) {
+        deferLockRelease = true;
+        void (async () => {
+          try {
+            const settlement = await waitForLateSettlement(unknownError.settlement, maximumLateSettlementMs);
+            if (settlement?.status === "fulfilled") {
+              await finalizeCommittedResult(settlement.value);
+            } else if (idempotencyStoreKey && idempotencyReservationId && !idempotencyCompleted) {
+              await config.stores.idempotency.fail(idempotencyStoreKey, idempotencyReservationId);
+            }
+          } catch {
+            // The foreground request has already received a deadline/cancellation response.
+            // Durable adapters and audit/telemetry hooks remain the source of truth.
+          } finally {
+            stopIdempotencyRenewal();
+            await heldLock?.release().catch(() => undefined);
+          }
+        })();
+      } else if (idempotencyStoreKey && idempotencyReservationId && !idempotencyCompleted) {
+        stopIdempotencyRenewal();
+        await config.stores.idempotency.fail(idempotencyStoreKey, idempotencyReservationId).catch(() => undefined);
       }
+      if (!deferLockRelease) stopIdempotencyRenewal();
       const error = asGuildGateError(unknownError);
+      if (error.code === "SESSION_EXPIRED" || error.code === "SESSION_REVOKED") clearSessionCookie = true;
       const fallbackContext: Omit<ActionContext, "signal" | "attempt" | "transaction" | "fencingToken"> = contextBase ?? {
         requestId,
         request,
@@ -464,7 +565,7 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
         meta: meta(),
       };
     } finally {
-      await heldLock?.release().catch(() => undefined);
+      if (!deferLockRelease) await heldLock?.release().catch(() => undefined);
     }
   }
 
@@ -588,8 +689,8 @@ function validateConfig(config: GuildGateConfig): void {
   if (baseUrl.username || baseUrl.password) throw errors.configuration("app.baseUrl cannot contain credentials");
   if (config.app.environment === "production") {
     if (baseUrl.protocol !== "https:") throw errors.configuration("app.baseUrl must use HTTPS in production");
-    if (["localhost", "127.0.0.1", "::1"].includes(baseUrl.hostname)) {
-      throw errors.configuration("app.baseUrl cannot point to localhost in production");
+    if (isLoopbackOrUnspecifiedHost(baseUrl.hostname)) {
+      throw errors.configuration("app.baseUrl cannot point to a loopback or unspecified host in production");
     }
   }
   if (Buffer.byteLength(config.security.auditIpSalt) < 16) {
@@ -607,6 +708,13 @@ function validateConfig(config: GuildGateConfig): void {
   if (config.app.environment === "production" && config.security.cookie?.secure === false) {
     throw errors.configuration("Secure session cookies cannot be disabled in production");
   }
+  const lateSettlementMs = config.reliability?.maximumLateSettlementMs;
+  if (lateSettlementMs !== undefined && (!Number.isFinite(lateSettlementMs) || lateSettlementMs < 10 || lateSettlementMs > 24 * 60 * 60_000)) {
+    throw errors.configuration("maximumLateSettlementMs must be between 10ms and 24 hours");
+  }
+  if (config.audit?.enabled === false && (config.audit.failClosedActions?.length ?? 0) > 0) {
+    throw errors.configuration("Audit fail-closed actions cannot be configured while auditing is disabled");
+  }
 }
 
 function validateActionDefinition<I, O>(definition: ActionDefinition<I, O>, auditFailClosed: Set<string>): void {
@@ -622,6 +730,9 @@ function validateActionDefinition<I, O>(definition: ActionDefinition<I, O>, audi
   if (definition.idempotency && definition.idempotency.ttlMs < 1) {
     throw errors.configuration(`Action ${definition.name} has an invalid idempotency ttlMs`);
   }
+  if (definition.idempotency && definition.idempotency.ttlMs < (definition.timeoutMs ?? 8_000)) {
+    throw errors.configuration(`Action ${definition.name} idempotency ttlMs must be at least timeoutMs`);
+  }
   if (definition.concurrency) {
     const ttl = definition.concurrency.ttlMs ?? Math.max(5_000, definition.timeoutMs ?? 8_000);
     if (ttl < 100 || (definition.concurrency.waitMs ?? 0) < 0) throw errors.configuration(`Action ${definition.name} has an invalid concurrency policy`);
@@ -632,8 +743,16 @@ function validateActionDefinition<I, O>(definition: ActionDefinition<I, O>, audi
   if (definition.retry && (definition.retry.attempts < 1 || definition.retry.baseDelayMs < 0 || definition.retry.maximumDelayMs < definition.retry.baseDelayMs)) {
     throw errors.configuration(`Action ${definition.name} has an invalid retry policy`);
   }
-  if (auditFailClosed.has(definition.name) && !definition.idempotency) {
-    throw errors.configuration(`Audit fail-closed action ${definition.name} must use idempotency`);
+  if (auditFailClosed.has(definition.name)) {
+    if (!definition.idempotency) {
+      throw errors.configuration(`Audit fail-closed action ${definition.name} must use idempotency`);
+    }
+    if (!definition.transaction || definition.transaction.required === false) {
+      throw errors.configuration(`Audit fail-closed action ${definition.name} must require a transaction`);
+    }
+    if (definition.audit?.enabled === false) {
+      throw errors.configuration(`Audit fail-closed action ${definition.name} cannot disable auditing`);
+    }
   }
 }
 
@@ -643,8 +762,25 @@ function firstHeader(headers: RequestEnvelope["headers"], name: string): string 
 }
 
 
-function combineSignals(primary: AbortSignal, secondary: AbortSignal | undefined): AbortSignal {
-  return secondary ? AbortSignal.any([primary, secondary]) : primary;
+async function waitForLateSettlement<T>(
+  settlement: Promise<DeadlineSettlement<T>>,
+  maximumWaitMs: number,
+): Promise<DeadlineSettlement<T> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), maximumWaitMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  try {
+    return await Promise.race([settlement, expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function combineSignals(primary: AbortSignal, ...secondary: Array<AbortSignal | undefined>): AbortSignal {
+  const signals = [primary, ...secondary.filter((signal): signal is AbortSignal => Boolean(signal))];
+  return signals.length > 1 ? AbortSignal.any(signals) : primary;
 }
 
 function createNoopTransactionScope(): TransactionScope {

@@ -1,13 +1,13 @@
 # GuildGate
 
-GuildGate, Discord bot panellerinin sunucu tarafı için hazırlanmış bir TypeScript kütüphanesidir. Oturum, güvenli yazma işlemi, politika denetimi, realtime teslimat, veri tabanı bağlantısı, yönetici araçları, izleme ve analitik parçalarını uygulama sahibinin yönettiği sözleşmeler altında toplar.
+GuildGate, Discord bot panellerinin sunucu tarafı için hazırlanmış korumalı action çekirdeği ve altyapı paketidir. Oturum, güvenli yazma işlemi, politika denetimi, realtime teslimat, veri tabanı bağlantısı, yönetici araçları, izleme ve analitik parçalarını uygulama sahibinin yönettiği sözleşmeler altında toplar.
 
 Kütüphane panel arayüzü üretmez ve uygulama verisinin sahibi olmaz. Veri tabanını, HTTP çatısını, Discord istemcisini, telemetri sistemini ve grafiklerin nerede gösterileceğini siz seçersiniz.
 
-Güncel paket: `@kavtuai/guildgate@1.0.0`
+Güncel paket: `@kavtuai/guildgate@1.1.0`
 Gerekli çalışma ortamı: Node.js 22 veya daha yeni
 
-`1.0.0`, ilk kararlı sözleşme sürümüdür. Bakımcı güvenlik incelemesi [SECURITY_AUDIT.md](SECURITY_AUDIT.md) içinde yayımlanır. Proje bağımsız üçüncü taraf denetiminden geçmiş gibi sunulmaz; bu kaydı isteyen ekipler [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md) belgesini inceleme kapsamı olarak kullanabilir.
+`1.1.0`, kararlı sözleşme hattını transaction kesinliği, reservation sahipliği, katı yanıt süresi, cursor pagination ve realtime transport eşitliği çevresinde güçlendirir. Bakımcı incelemesi [SECURITY_AUDIT.md](SECURITY_AUDIT.md) içinde yayımlanır; paket bağımsız üçüncü taraf denetiminden geçmiş gibi sunulmaz.
 
 ## Kurulum
 
@@ -68,6 +68,16 @@ GuildGate bu paketleri doğrudan içe aktarmaz. Adapter'lar küçük uyumlu aray
 - line, bar ve donut SVG grafikleri
 - panel tabloları için sütun/satır modeli
 
+## 1.1.0 güvenilirlik modeli
+
+GuildGate, domain yazımı commit edildikten sonra cache, audit, realtime veya gözlemci callback'i hata verse bile commit'i kesin kabul eder. Commit sonrasındaki sorunlar response metadata ve telemetriye yazılır; sahte rollback oluşturmaz ve domain işlemini tekrar çalıştırmaz. İç içe PostgreSQL işlemleri savepoint kullanır; iç transaction callback'leri yalnızca savepoint başarıyla tamamlanınca dış transaction'a aktarılır.
+
+Idempotency kayıtlarında reservation kimliği bulunur. Tamamlama ve temizleme işlemleri compare-and-set ile yapılır; süresi dolan eski worker, yeni reservation kaydını ezemez veya silemez. Action timeout'u, uygulama kodu `AbortSignal` değerini dinlemese bile ayarlanan sınırda `504` döndürür. Süresi dolmuş idempotent işlem daha sonra tamamlanırsa lease sonuç alınana kadar tutulur ve commit edilmiş sonuç güvenli replay için kaydedilir. Fiziksel işlemin erken durması gereken yerlerde uygulama kodu verilen sinyali dinlemelidir.
+
+WebSocket ve Socket.IO mesajları aynı payload, rate, activity, subscription ve backpressure kontrollerinden geçer. Audit sayfalaması opak `(createdAt, id)` cursor kullanır. Redis cache retag ve tag temizliği atomiktir, tag indekslerine TTL uygulanır; resmi memory, Redis ve PostgreSQL session store'ları kullanıcı başına oturum sınırını store işlemi içinde uygular.
+
+Transactional outbox tasarım gereği at-least-once teslimat yapar. Claim lease, batch ve concurrency değerleri sınırlıdır; publisher hata metinleri temizlenip kısaltılır. Harici yan etki oluşturan consumer, event ID üzerinden deduplication uygulamalıdır. PostgreSQL rate-limit güncellemeleri bucket başına transaction advisory lock ile sıralanır; Discord OAuth token refresh işlemi dağıtık single-flight lease kullanır.
+
 ## En küçük kurulum
 
 ```ts
@@ -99,6 +109,9 @@ const gate = createGuildGate({
   },
   stores,
   transactions: createMemoryTransactionAdapter(),
+  reliability: {
+    maximumLateSettlementMs: 5 * 60_000,
+  },
 });
 ```
 
@@ -370,6 +383,8 @@ Bu değeri `createGuildGate()` yapılandırmasına verin. Adapter action span, s
 ```bash
 npm run typecheck
 npm test
+npm run test:coverage
+npm run test:services
 npm run pack:check
 npm run test:load
 npx guildgate-doctor --help
@@ -379,7 +394,7 @@ npx guildgate-migration --help
 
 ## Sürüm durumu
 
-`1.0.0` kararlı yayıma hazırdır. Sözleşmeler, migration politikası, tehdit modeli, güvenlik bildirim süreci, bakımcı güvenlik incelemesi, regresyon testleri, paket kontrolleri ve yerel yük testi bu kaynak ağacında bulunur. Redis, PostgreSQL, Discord, reverse proxy ve uygulamaya özel yetkilendirme testleri hedef ortamda ayrıca yapılmalıdır.
+`1.1.0`, güçlendirilmiş kararlı sürümdür. Son yerel release kontrolünde 76 deterministik unit ve adapter regresyon testi sıfır hatayla tamamlandı; PostgreSQL ve Redis için hazırlanan iki canlı servis testi yerelde atlandı ve CI içinde geçici servislerle çalışacak şekilde etkin bırakıldı. Yerleşik Node.js coverage sonucu satırlarda %82,25, branch’lerde %73,57 ve fonksiyonlarda %73,30 olarak ölçüldü; üç değer de zorunlu eşiklerin üzerindedir. Coverage sırasında test dosyaları tek tek çalıştırılarak ölçüm yükünün deadline ve lease yenileme zamanlamasını bozması engellenir. Sürüm ayrıca CodeQL, paket kimliği ve credential-pattern taraması, 5.000 işlemlik yük testi, kaynak manifesti doğrulaması ve temiz npm tüketici kurulumu içerir. Uygulamaya özel Discord yetkileri, reverse proxy politikası ve domain authorization testleri tüketici uygulamanın test paketinde kalır.
 
 Diğer belgeler:
 

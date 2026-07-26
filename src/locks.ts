@@ -50,38 +50,56 @@ export class DistributedLockManager {
 
     const controller = new AbortController();
     let owned = true;
-    const renewEveryMs = leaseStore ? Math.max(100, input.renewEveryMs ?? Math.floor(input.ttlMs / 3)) : 0;
+    let released = false;
+    const markLost = (cause?: unknown): void => {
+      if (!owned) return;
+      owned = false;
+      controller.abort(cause ?? errors.lockLost({ key: input.key, fencingToken: lease.fencingToken }));
+    };
+    const configuredRenewal = input.renewEveryMs ?? Math.floor(input.ttlMs / 3);
+    if (input.renewEveryMs !== undefined && (!Number.isFinite(input.renewEveryMs) || input.renewEveryMs < 25 || input.renewEveryMs >= input.ttlMs)) {
+      await store.release(input.key, token).catch(() => undefined);
+      throw errors.configuration("Lock renewEveryMs must be at least 25ms and lower than ttlMs");
+    }
+    const renewEveryMs = leaseStore
+      ? Math.max(25, Math.min(input.ttlMs - 1, configuredRenewal))
+      : 0;
     let renewing = false;
-    const timer = renewEveryMs > 0
+    const renewalTimer = renewEveryMs > 0
       ? setInterval(async () => {
           if (renewing || !owned) return;
           renewing = true;
           try {
             const renewed = await leaseStore!.renew(input.key, token, input.ttlMs);
-            if (!renewed) {
-              owned = false;
-              controller.abort(errors.lockLost({ key: input.key, fencingToken: lease.fencingToken }));
-            } else {
-              lease.expiresAtMs = Date.now() + input.ttlMs;
-            }
+            if (!renewed) markLost();
+            else lease.expiresAtMs = Date.now() + input.ttlMs;
           } catch (error) {
-            owned = false;
-            controller.abort(error);
+            markLost(error);
           } finally {
             renewing = false;
           }
         }, renewEveryMs)
       : undefined;
-    (timer as unknown as { unref?: () => void } | undefined)?.unref?.();
+    const expiryTimer = !leaseStore
+      ? setTimeout(() => markLost(), Math.max(1, lease.expiresAtMs - Date.now()))
+      : undefined;
+    (renewalTimer as unknown as { unref?: () => void } | undefined)?.unref?.();
+    (expiryTimer as unknown as { unref?: () => void } | undefined)?.unref?.();
 
     return {
       lease,
       signal: controller.signal,
       assertOwned() {
-        if (!owned || controller.signal.aborted) throw errors.lockLost({ key: input.key, fencingToken: lease.fencingToken });
+        if (!owned || controller.signal.aborted || Date.now() >= lease.expiresAtMs) {
+          markLost();
+          throw errors.lockLost({ key: input.key, fencingToken: lease.fencingToken });
+        }
       },
       async release() {
-        if (timer) clearInterval(timer);
+        if (released) return;
+        released = true;
+        if (renewalTimer) clearInterval(renewalTimer);
+        if (expiryTimer) clearTimeout(expiryTimer);
         owned = false;
         await store.release(input.key, token);
       },

@@ -56,8 +56,12 @@ export function createDiscordGuildAuthorizer(input: {
   const apiBase = input.apiBaseUrl ?? "https://discord.com/api/v10";
 
   const inspect: DiscordGuildAuthorizer["inspect"] = async (request) => {
-    const load = () => loadAccess(request.userId, request.guildId, request.signal);
-    if (request.consistency === "live") return load();
+    const load = (cacheSignal?: AbortSignal) => loadAccess(
+      request.userId,
+      request.guildId,
+      combineSignals(request.signal, cacheSignal),
+    );
+    if (request.consistency === "live") return load(request.signal);
     return input.cache.remember({
       key: `discord-access:${request.userId}:${request.guildId}`,
       ttlMs: input.cachedTtlMs ?? 20_000,
@@ -145,4 +149,10 @@ class ResponseError extends Error {
   constructor(readonly status: number, body: string) {
     super(`Discord request failed with ${status}: ${body}`);
   }
+}
+
+function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (!active.length) return undefined;
+  return active.length === 1 ? active[0] : AbortSignal.any(active);
 }

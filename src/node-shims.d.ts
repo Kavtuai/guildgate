@@ -57,3 +57,7 @@ declare module "node:perf_hooks" {
 declare module "node:os" {
   export function loadavg(): number[];
 }
+
+declare module "node:net" {
+  export function isIP(input: string): 0 | 4 | 6;
+}

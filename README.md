@@ -1,13 +1,13 @@
 # GuildGate
 
-GuildGate is a TypeScript library for the server side of Discord bot dashboards. It keeps authentication, write safety, policy checks, realtime delivery, storage adapters, operator tools, monitoring and analytics behind contracts controlled by the application owner.
+GuildGate is a guarded action kernel and infrastructure toolkit for the server side of Discord bot dashboards. It keeps authentication, write safety, policy checks, realtime delivery, storage adapters, operator tools, monitoring and analytics behind contracts controlled by the application owner.
 
 The package does not generate a dashboard UI and does not take ownership of application data. You choose the database, HTTP framework, Discord client, telemetry backend and chart placement.
 
-Current package: `@kavtuai/guildgate@1.0.0`
+Current package: `@kavtuai/guildgate@1.1.0`
 Required runtime: Node.js 22 or newer
 
-Version `1.0.0` is the first stable contract line. The maintainer security audit is published in [SECURITY_AUDIT.md](SECURITY_AUDIT.md). GuildGate does not claim an independent third-party audit; teams that need one can use [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md) as the review handoff.
+Version `1.1.0` hardens the stable line around transaction finality, reservation ownership, strict response deadlines, cursor pagination and realtime transport parity. The maintainer review is published in [SECURITY_AUDIT.md](SECURITY_AUDIT.md); the package does not claim an independent third-party audit.
 
 ## Install
 
@@ -68,6 +68,16 @@ GuildGate does not import those packages. The adapters accept small compatible i
 - line, bar and donut SVG renderers
 - table models for dashboard views
 
+## Reliability model in 1.1.0
+
+GuildGate treats a committed domain write as final even when a cache, audit, realtime or observer callback fails afterward. Post-commit problems are reported in response metadata and telemetry; they do not trigger a false rollback or repeat the domain operation. Nested PostgreSQL work uses savepoints and releases its callbacks to the outer transaction only after the savepoint succeeds.
+
+Idempotency records carry a reservation identifier. Completion and cleanup are compare-and-set operations, so an expired worker cannot overwrite or delete a newer reservation. Action deadlines return a `504` at the configured boundary even when application code ignores `AbortSignal`. When a timed-out idempotent operation later settles, GuildGate retains reservation ownership and the distributed lease while the bounded late-settlement observer is active, then records a committed result for safe replay. `reliability.maximumLateSettlementMs` limits how long that observation can retain resources. The physical operation must still honor the supplied signal and validate fencing tokens at the durable write boundary when early cancellation is required.
+
+WebSocket and Socket.IO messages pass through the same payload, rate, activity, subscription and backpressure guards. Subscription capacity is rechecked after asynchronous authorization, broken connections are removed after delivery failure, and revocation listeners are isolated from one another. Audit pagination uses an opaque `(createdAt, id)` cursor. Redis cache retagging and tag cleanup are atomic, tag indexes receive TTLs, and official memory, Redis and PostgreSQL session stores enforce the per-user session cap inside the store operation.
+
+The transactional outbox remains at-least-once by design. Claims are leased, dispatch concurrency and batch size are bounded, and stored publisher errors are sanitized and truncated. Consumers must deduplicate by event ID before applying external side effects. PostgreSQL rate-limit updates are serialized per bucket with transaction-scoped advisory locks, and Discord OAuth token refresh uses a distributed single-flight lease.
+
 ## Minimal setup
 
 ```ts
@@ -99,6 +109,9 @@ const gate = createGuildGate({
   },
   stores,
   transactions: createMemoryTransactionAdapter(),
+  reliability: {
+    maximumLateSettlementMs: 5 * 60_000,
+  },
 });
 ```
 
@@ -397,6 +410,8 @@ Permission helpers use `bigint` and cover user permissions, bot permissions, gui
 ```bash
 npm run typecheck
 npm test
+npm run test:coverage
+npm run test:services
 npm run pack:check
 npm run test:load
 npx guildgate-doctor --help
@@ -406,7 +421,7 @@ npx guildgate-migration --help
 
 ## Release status
 
-`1.0.0` is ready for stable publication. The package contract, migration policy, threat model, security response process, maintainer audit, regression tests, package checks and local load harness are included in this source tree. Production users still need deployment-specific tests for their Redis, PostgreSQL, Discord, proxy and authorization setup.
+`1.1.0` is the hardened stable release. The final local release pass completed 76 deterministic unit and adapter regression tests with zero failures; two PostgreSQL and Redis live-service definitions were skipped locally and remain enabled in CI with disposable services. Native coverage completed at 82.25% lines, 73.57% branches and 73.30% functions, above the enforced thresholds. Coverage executes one test file at a time so instrumentation does not distort deadline and lease-renewal timing. The release also includes CodeQL, package identity and credential-pattern scanning, a 5,000-operation load harness, source-manifest validation and npm package-consumer verification. Application-specific Discord permissions, reverse-proxy policy and domain authorization remain part of the consuming application test suite.
 
 See:
 

@@ -1,96 +1,79 @@
 # Changelog
 
-All notable changes are recorded here. Semantic Versioning applies from `1.0.0`. Pre-1.0 milestones may contain API changes described in `MIGRATION.md`.
+All notable changes are recorded here. Semantic Versioning applies from `1.0.0`.
+
+## 1.1.0 - 2026-07-26
+
+### Reliability
+
+- Separated PostgreSQL `COMMIT` from post-commit callback execution. A callback failure no longer emits a false rollback or repeats a committed domain write.
+- Added nested PostgreSQL transactions with `SAVEPOINT`, `ROLLBACK TO SAVEPOINT` and callback propagation after successful savepoint release.
+- Added reservation ownership to idempotency records. Memory, Redis and PostgreSQL completion/cleanup operations now use compare-and-set semantics.
+- Made action deadlines return at the configured boundary even when an operation ignores `AbortSignal`. Late settlement remains observable and idempotent committed results are stored for replay.
+- Kept reservation ownership and distributed leases during bounded late settlement. Added `reliability.maximumLateSettlementMs` so an operation that ignores cancellation cannot retain resources without a configured ceiling.
+- Added opaque audit cursors ordered by `(createdAt, id)` and store-level pagination for complete traversal.
+- Made Redis cache retagging, stale tag removal and cache deletion atomic. Tag indexes now receive bounded TTLs.
+- Enforced the per-user session cap inside the official memory, Redis and PostgreSQL stores.
+- Serialized PostgreSQL rate-limit bucket updates with transaction-scoped advisory locks.
+- Moved configured fail-closed audit persistence into the required transaction before commit.
+- Added distributed single-flight locking for Discord OAuth token refresh and re-read credentials after lock acquisition.
+- Made cache stampede protection use renewable leases and persist lock-busy fallback loads.
+
+### Realtime
+
+- Routed Socket.IO subscribe, unsubscribe and heartbeat traffic through the same payload-size, rate-limit and activity controls used by WebSocket messages.
+- Added Socket.IO acknowledgement responses, replay support and transport backpressure detection.
+- Added regression tests for oversized Socket.IO messages, rate limiting, idle activity and slow clients.
+- Rechecked subscription capacity after asynchronous authorization, removed failed connections after send errors and isolated revocation listener failures.
+- Bounded outbox claim leases, batch size and concurrency; sanitized persisted publisher errors.
+
+### Security
+
+- Cleared expired and revoked session cookies through Fastify, Express and Hono response metadata.
+- Rejected IPv4, IPv6, unspecified and IPv4-mapped loopback origins, application URLs and Discord OAuth endpoints in production configuration.
+- Added malformed audit cursor validation and reservation-loss errors.
+- Extended release verification to require the adapter `1.1` contract, coverage CI and PostgreSQL/Redis service integration CI.
+
+### Testing and operations
+
+- Kept the awaited deadline timer referenced until settlement, preventing Node.js 22 from cancelling pending timeout operations.
+- Replaced the idempotency-renewal timing assertion with a controlled execution gate and bounded replay polling instead of relying on one exact timer boundary.
+- Serialized native coverage test-file execution with `--test-concurrency=1` so instrumentation does not distort lease-renewal timing.
+- Expanded deterministic coverage from 39 tests in 1.0.0 to 76 passing tests in 1.1.0, with two live-service tests enabled in CI.
+- Added Node.js test coverage collection with enforced minimums of 80% lines, 70% branches and 70% functions.
+- Added disposable PostgreSQL 17 and Redis 8 service tests in GitHub Actions using current client adapters.
+- Fixed the ciphertext-tamper regression test to flip a decoded authentication-tag byte instead of mutating Base64URL padding bits.
+- Repeated the complete deterministic suite five consecutive times and added 10,000/20,000-operation stress references.
+- Updated the load report, migration guide, operating limits, threat model and English/Turkish README files.
 
 ## 1.0.0 - 2026-07-26
 
 ### Added
 
-- Stable `1.0` markers for action, store and realtime contracts.
-- Reliable write controls, realtime transports, PostgreSQL and Redis adapters, operator APIs, monitoring, analytics, charts and telemetry hooks planned for the first stable line.
-- Maintainer security audit, independent-review handoff, migration policy, operating limits and package security verification.
+- Stable action, store and realtime contracts.
+- Guarded writes, realtime transports, PostgreSQL and Redis adapters, operator APIs, monitoring, analytics, charts and telemetry hooks.
+- Maintainer security review, external-review handoff, migration policy, operating limits and package verification.
 
 ### Security
 
-- Prevented retained realtime events from being replayed before channel authorization succeeds.
-- Removed hidden internal details from server errors and redacted details that are explicitly exposed.
-- Hardened SVG chart output against theme and label injection.
-- Closed the concurrent PostgreSQL idempotency reservation race.
-- Added renewable Redis leases with ownership checks and fencing tokens.
-- Stopped retrying generic `TypeError` failures by default.
-- Added bounded, cycle-safe serialization and broader secret-key redaction.
-- Added runtime bounds for HTTP methods, cookies, actions, OAuth settings, locks and realtime channels.
-- Closed malformed realtime JSON connections with protocol code 1007.
-- Removed stored session metadata from operator output unless an application supplies an explicit public mapper.
-
-### Changed
-
-- Operator session metadata is private by default.
-- Retry policy requires an explicit application rule for generic upstream exceptions.
-- Release verification checks package identity, exports, CLI targets, secret patterns and OIDC publishing settings.
+- Authorized replay, hidden-error handling, SVG output hardening, renewable Redis leases, bounded serialization and secret redaction.
+- Runtime bounds for HTTP methods, cookies, OAuth settings, locks, retries and realtime channels.
+- Private operator session metadata unless an application supplies an explicit mapper.
 
 ## 1.0.0-rc.1 - 2026-07-26
 
 ### Added
 
-- Stable contract version markers for actions, stores and realtime adapters.
-- Transaction adapters, commit and rollback hooks, optimistic revision checks and transactional outbox support.
-- Renewable distributed leases, fencing tokens and lock-loss cancellation.
-- Retry policies and a circuit breaker with open, half-open and reset states.
-- WebSocket, Socket.IO and Server-Sent Events adapters.
-- Realtime event sequences, resume cursors and session revocation bus contracts.
-- Claim-based outbox workers for multi-instance delivery.
-- PostgreSQL stores, migration SQL, transaction support, analytics records and realtime event logs.
-- Hono and discord.js-compatible adapters.
-- OpenTelemetry bridge hooks without a required telemetry SDK.
-- Owner operator actions for sessions, audit, maintenance, blocks, policies, rate policies and metrics.
-- Process and Discord bot monitoring, health probes and time-series analytics.
-- SVG line, bar and donut charts plus framework-neutral table models.
-- Store contract tests, a load harness and migration CLI.
-
-### Changed
-
-- Action execution can expose a transaction scope, retry attempt and fencing token.
-- Realtime delivery can be committed with the domain transaction when a transaction adapter is configured.
-- Framework request types are kept behind small compatibility interfaces.
-- Documentation now separates release-candidate claims from the final security-review gate.
-
-## 0.4.0 - 2026-07-26
-
-### Added
-
-- Hono handler, PostgreSQL adapter, discord.js-compatible adapter, OpenTelemetry hooks and owner inspection services.
-- Status monitoring, analytics storage, charts and table models.
-
-## 0.3.0 - 2026-07-26
-
-### Added
-
-- WebSocket, Socket.IO and SSE bindings.
-- Authorized subscriptions, heartbeat, revocation disconnect, queue limits, event sequencing and claim-based outbox workers.
-
-## 0.2.0 - 2026-07-26
-
-### Added
-
-- Optimistic concurrency, transaction hooks, cache invalidation, renewable leases, fencing tokens, retries, circuit breakers and operator session actions.
+- Transaction adapters, optimistic revisions, outbox support, renewable leases, WebSocket/Socket.IO/SSE bindings, PostgreSQL stores, Hono and discord.js adapters, telemetry, operator actions and analytics.
 
 ## 0.1.1 - 2026-07-26
 
 ### Fixed
 
-- Added help output for both command-line tools.
-- Made the writing checker operate on the current project directory.
-- Missing documentation paths are skipped instead of causing an error.
-- Added installed CLI regression tests.
+- Portable CLI help and writing checks from installed package directories.
 
 ## 0.1.0 - 2026-07-25
 
 ### Added
 
-- Database-neutral storage contracts and memory reference stores.
-- Redis stores for sessions, OAuth state, rate limits, cache, idempotency and locks.
-- Opaque sessions with expiry, idle expiry, rotation, caps and revocation.
-- Discord OAuth client, encrypted credential storage and `bigint` permission helpers.
-- Guarded actions with policy, limits, authorization, idempotency, locks, deadlines, audit, cache and realtime delivery.
-- Fastify and Express handlers, a realtime hub, an outbox dispatcher, bilingual errors, documentation, UML, CI and tests.
+- Initial storage contracts, sessions, OAuth, guarded actions, Redis stores, HTTP handlers, realtime hub, bilingual errors, documentation and CI.

@@ -1,9 +1,11 @@
 # Yönetim API'si
 
-`createOperatorActions()` hazır action'lar üretir; route kaydını uygulama yapar.
+`createOperatorActions()` korumalı action'lar üretir; route kaydını uygulama yapar.
 
-Kullanıcı kendi session kayıtlarını listeleyebilir, bir session'ı veya diğer session'ları iptal edebilir. Bot sahibi audit, maintenance, block, rate policy ve analitik kayıtlarını inceleyebilir.
+Kullanıcı kendi session kayıtlarını listeleyebilir, tek session'ı veya diğer session'larını iptal edebilir. Owner; audit sayfaları, maintenance, block, rate policy, metrik ve circuit durumunu inceleyebilir.
 
-Owner listesi `createGuildGate()` yapılandırmasından gelir. Yazma action'ları normal session, origin, CSRF, rate ve audit kontrollerinden geçer.
+Audit pagination opak cursor ve kararlı `(createdAt, id)` sırası kullanır. Varsayılan sayfa boyutu 50, üst sınır 200'dür. Özel audit store cursor'ı veri tabanı sorgusunda uygulamalıdır.
 
-Liste action'larında varsayılan sayfa boyutu 50, üst sınır 200'dür. Ham session tokenı API cevabına konmaz.
+Session metadata varsayılan olarak gizlidir. Uygulama yalnızca güvenli alanları döndüren açık mapper sağlarsa API cevabına eklenir. Ham session tokenı hiçbir zaman dönmez.
+
+Owner yazma action'ları normal session, origin, CSRF, rate, policy ve audit kontrollerinden geçer.

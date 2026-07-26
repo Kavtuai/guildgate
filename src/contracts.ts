@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { GuildGateStores } from "./stores.js";
 import type { SessionRecord } from "./types.js";
 
-export const adapterContractVersion = "1.0" as const;
+export const adapterContractVersion = "1.1" as const;
 export const actionContractVersion = "1.0" as const;
 export const realtimeContractVersion = "1.0" as const;
 
@@ -42,14 +42,21 @@ export async function runStoreContract(factory: () => GuildGateStores | Promise<
     const results = await Promise.all(Array.from({ length: 20 }, () => stores.rateLimits.hit({ key, limit: 5, windowMs: 60_000, nowMs: Date.now() })));
     assertEqual(results.filter((result) => result.allowed).length, 5);
   });
-  await check(checks, "idempotency detects replay and changed payload", async () => {
+  await check(checks, "idempotency owns completion with a reservation token", async () => {
     const key = randomUUID();
-    const record = { key, requestHash: "a", state: "inflight" as const, createdAtMs: Date.now(), expiresAtMs: Date.now() + 60_000 };
+    const firstReservation = randomUUID();
+    const record = { key, requestHash: "a", reservationId: firstReservation, state: "inflight" as const, createdAtMs: Date.now(), expiresAtMs: Date.now() + 60_000 };
     assertEqual((await stores.idempotency.begin(record)).status, "started");
-    assertEqual((await stores.idempotency.begin(record)).status, "inflight");
-    assertEqual((await stores.idempotency.begin({ ...record, requestHash: "b" })).status, "conflict");
-    await stores.idempotency.complete(key, { ok: true }, Date.now() + 60_000);
-    assertEqual((await stores.idempotency.begin(record)).status, "completed");
+    assertEqual((await stores.idempotency.begin({ ...record, reservationId: randomUUID() })).status, "inflight");
+    assertEqual((await stores.idempotency.begin({ ...record, requestHash: "b", reservationId: randomUUID() })).status, "conflict");
+    if (stores.idempotency.renew) {
+      assertEqual(await stores.idempotency.renew(key, Date.now() + 90_000, randomUUID()), false);
+      assertEqual(await stores.idempotency.renew(key, Date.now() + 90_000, firstReservation), true);
+    }
+    assertEqual(await stores.idempotency.complete(key, { stale: true }, Date.now() + 60_000, randomUUID()), false);
+    assertEqual(await stores.idempotency.fail(key, randomUUID()), false);
+    assertEqual(await stores.idempotency.complete(key, { ok: true }, Date.now() + 60_000, firstReservation), true);
+    assertEqual((await stores.idempotency.begin({ ...record, reservationId: randomUUID() })).status, "completed");
   });
   await check(checks, "distributed lock has mutual exclusion", async () => {
     const key = randomUUID();
@@ -78,6 +85,34 @@ export async function runStoreContract(factory: () => GuildGateStores | Promise<
     assertEqual(await stores.cache.deleteByTags(["contract"]), 1);
     assertEqual(await stores.cache.get("contract:cache"), null);
   });
+  await check(checks, "cache retagging does not keep destructive stale membership", async () => {
+    const cacheKey = `contract:retag:${randomUUID()}`;
+    await stores.cache.set(cacheKey, { value: 1, expiresAtMs: Date.now() + 60_000, tags: ["old-tag"] });
+    await stores.cache.set(cacheKey, { value: 2, expiresAtMs: Date.now() + 60_000, tags: ["new-tag"] });
+    assertEqual(await stores.cache.deleteByTags(["old-tag"]), 0);
+    assertEqual((await stores.cache.get<number>(cacheKey))?.value, 2);
+    assertEqual(await stores.cache.deleteByTags(["new-tag"]), 1);
+  });
+  const listAuditPage = stores.audit.listPage;
+  if (listAuditPage) {
+    await check(checks, "audit cursor reaches later pages without duplicates", async () => {
+      const action = `contract.audit.${randomUUID()}`;
+      const createdAt = new Date().toISOString();
+      for (let index = 0; index < 5; index += 1) {
+        await stores.audit.write({
+          id: `${index}`.padStart(2, "0"), requestId: randomUUID(), action,
+          actor: { type: "system" }, result: "success", policyVersion: 1,
+          metadata: { durationMs: index }, createdAt,
+        });
+      }
+      const first = await listAuditPage({ action, limit: 2 });
+      const second = await listAuditPage({ action, limit: 2, cursor: first.nextCursor });
+      const third = await listAuditPage({ action, limit: 2, cursor: second.nextCursor });
+      const ids = [...first.items, ...second.items, ...third.items].map((event) => event.id);
+      assertEqual(new Set(ids).size, 5);
+      assertEqual(ids.length, 5);
+    });
+  }
   if (stores.outbox.claim) {
     await check(checks, "outbox claims isolate workers", async () => {
       const now = new Date().toISOString();

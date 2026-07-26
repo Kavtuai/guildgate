@@ -5,7 +5,7 @@ const root = process.cwd();
 const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const failures = [];
 
-check(packageJson.version === "1.0.0", "package version must be 1.0.0");
+check(packageJson.version === "1.1.0", "package version must be 1.1.0");
 check(Object.keys(packageJson.dependencies ?? {}).length === 0, "the core package must not add runtime dependencies");
 check(packageJson.publishConfig?.access === "public", "publishConfig.access must stay public");
 
@@ -25,6 +25,13 @@ check(/id-token:\s*write/.test(publishWorkflow), "publish workflow must request 
 check(/environment:\s*npm/.test(publishWorkflow), "publish workflow must use the protected npm environment");
 check(!/NODE_AUTH_TOKEN|NPM_TOKEN|npm_[A-Za-z0-9]{20,}/.test(publishWorkflow), "publish workflow must not use a long-lived npm token");
 check(/Verify release tag/.test(publishWorkflow), "publish workflow must verify tag and package version");
+
+const ciWorkflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+check(/service-integration:/.test(ciWorkflow), "CI must run PostgreSQL and Redis service integration tests");
+check(/test:coverage/.test(ciWorkflow), "CI must run the coverage harness");
+
+const contractSource = await readFile(join(root, "src/contracts.ts"), "utf8");
+check(/adapterContractVersion\s*=\s*["']1\.1["']/.test(contractSource), "stable adapter contract must be version 1.1");
 
 const sourceFiles = await filesUnder(join(root, "src"));
 for (const file of sourceFiles.filter((name) => name.endsWith(".ts"))) {

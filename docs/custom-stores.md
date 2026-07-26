@@ -1,111 +1,61 @@
 # Custom storage drivers
 
-GuildGate does not select a database. Implement the interfaces in `GuildGateStores` and pass them to `createGuildGate()`.
+GuildGate does not select a database. Implement `GuildGateStores` and pass it to `createGuildGate()`.
 
-## Record placement
+## Suggested placement
 
-A common production layout is:
-
-| Record | Suggested storage | Reason |
+| Record | Typical storage | Required property |
 |---|---|---|
-| Sessions | Redis or a database with expiry cleanup | Fast lookup and revocation |
-| OAuth state | Redis or an atomic database record | Single-use consume operation |
-| OAuth credentials | Durable database | Encrypted refresh tokens must survive restarts |
-| Rate limits | Redis or another atomic counter store | Shared limits across instances |
-| Cache | Redis or application cache | Shared invalidation |
-| Idempotency | Redis or durable database | Atomic first-writer ownership |
-| Locks | Redis, database advisory locks, or lease service | Shared resource exclusion |
-| Audit | Durable append-oriented database | Search, retention, incident review |
-| Outbox | Same database as the domain write when possible | Commit and delivery coordination |
-| Policies | Durable database | Maintenance and block state survives restart |
+| Sessions | Redis or durable database | atomic create-and-cap, revocation |
+| OAuth state | Redis or database | single-use consume |
+| OAuth credentials | durable database | encrypted persistence |
+| Rate limits | Redis or atomic counter store | atomic window decision |
+| Cache | Redis or application cache | atomic tag maintenance |
+| Idempotency | Redis or durable database | first-writer reservation and owner CAS |
+| Locks | Redis, advisory lock or lease service | token-safe release and renewal |
+| Audit | append-oriented database | stable cursor query |
+| Outbox | same database as domain write | transaction and claim ownership |
+| Policies | durable database | atomic version bump |
 
-This is a deployment suggestion, not a package requirement.
+## SessionStore
 
-## Required semantics
+The core stores only `idHash`, never the raw token. `create(record, maximumSessionsPerUser)` should insert the record and evict excess sessions in one serialized operation. `set()` remains available for compatibility and record rotation.
 
-### SessionStore
+## OAuthStateStore
 
-`set()` must replace the complete record. `listByUser()` must return active and revoked records still present in storage. The session manager removes expired records and enforces the per-user cap.
+`consume(stateHash, nowIso)` must read and delete atomically. Two callbacks must not consume the same state.
 
-Do not store the raw session token. The core sends only `idHash` to the store.
+## RateLimitStore
 
-### OAuthStateStore
+`hit()` atomically decides whether the cost fits in the current window. A separate read and write is not safe across processes.
 
-`consume(stateHash, nowIso)` must read and delete in one atomic operation. Two callbacks using the same state must not both succeed.
+## CacheStore
 
-### OAuthCredentialStore
+`set()` should update the entry and its tag memberships atomically. Retagging must remove stale memberships. Tag indexes need TTLs so expired cache keys do not leave permanent index rows. `deleteByTags()` should verify that a current entry still carries the requested tag before deleting it.
 
-Store only ciphertext produced by `TokenCipher`. Restrict direct database access because a stolen encryption key and copied ciphertext together expose Discord credentials.
+## IdempotencyStore
 
-### RateLimitStore
+`begin()` is first-writer ownership. An inflight record includes `reservationId`.
 
-`hit()` must atomically decide whether the cost fits within the current window. It returns the limit, remaining count, reset time, and retry delay.
+- no record: store inflight and return `started`
+- same hash and inflight: return `inflight`
+- same hash and completed: return the stored response
+- different hash: return `conflict`
 
-A read followed by a write without a transaction is not sufficient for multiple instances.
+`renew()`, `complete()` and `fail()` must compare `reservationId` and inflight state atomically. They return `false` for a stale owner. Renewal extends only the currently owned inflight record and should preserve its request hash and creation time.
 
-### CacheStore
+## LockStore
 
-`deleteByTags()` must delete entries matching any requested tag. It may return an approximate count if the backing cache expires index entries independently, but it must not leave known matching entries intentionally.
+Release must compare the token. Long work should implement renewable leases and increasing fencing tokens. Durable writes should compare the fence when an expired worker can still reach the database.
 
-### IdempotencyStore
+## AuditStore
 
-`begin()` is a first-writer operation:
+`listPage()` orders by `createdAt DESC, id DESC` and applies the opaque cursor in the backing query. Prefer append-only permissions for the application role.
 
-- No record: write `inflight` and return `started`.
-- Same key and same request hash, still inflight: return `inflight`.
-- Same key and same request hash, completed: return the stored response.
-- Same key and different request hash: return `conflict`.
+## OutboxStore
 
-`complete()` must preserve the original request hash and store the result. `fail()` removes an abandoned reservation so a later retry can run.
+Multiple workers need row claiming, skip-locked behavior or another lease. Delivery is at-least-once and `markPublished()` should be idempotent. Consumers deduplicate by event ID. Clamp caller-provided batch, concurrency and claim-lease settings before using them in queries or worker creation.
 
-### LockStore
+## Contract tests
 
-`acquire()` writes a lease only when no valid lease exists. `release()` must compare the token before deleting the lease. Deleting a lock by key alone can release a newer owner’s lock.
-
-Long operations should implement the optional lease methods and use `DistributedLockManager` renewal. A database update that can outlive a lease should also compare the fencing token so a stale owner cannot commit.
-
-### AuditStore
-
-Prefer append-only permissions for the application account. Redaction in the kernel covers known secret field names, but applications should avoid sending secrets in `changes` at all.
-
-### OutboxStore
-
-`next()` returns unpublished rows. Multiple workers need row claiming, skip-locked reads, or another lease mechanism in the custom driver. `markPublished()` must be idempotent.
-
-### PolicyStore
-
-Block lookup must ignore or remove expired blocks. `bumpPolicyVersion()` must be atomic. The version is written into audit events so an operator can see which policy generation handled a request.
-
-## Driver package layout
-
-A separate adapter can be published without changing the core package:
-
-```text
-packages/
-  guildgate-postgres/
-    src/
-      sessions.ts
-      credentials.ts
-      audit.ts
-      outbox.ts
-      policies.ts
-      index.ts
-```
-
-Use peer dependencies for the ORM or database client when the adapter should share the application’s installed client.
-
-## Driver contract tests
-
-Run the same behavior tests against every adapter:
-
-- OAuth state can be consumed once under concurrency.
-- A session can be revoked immediately.
-- Rate costs never exceed the limit under parallel requests.
-- One idempotency key has one owner.
-- A changed payload causes a conflict.
-- A lock cannot be released by another token.
-- Tag invalidation removes all matching cache entries.
-- Two outbox workers do not publish one row twice without an idempotent publisher.
-- Expired blocks stop applying.
-
-The repository’s memory driver is a reference for behavior, not for production durability.
+Run `runStoreContract()` against a clean namespace. Add service tests for concurrency, expiry and backend-specific scripts. The official CI exercises the public PostgreSQL and Redis adapters against disposable services.

@@ -172,7 +172,9 @@ export interface SocketIoLike {
   emit(event: string, payload?: unknown): unknown;
   disconnect(close?: boolean): void;
   on(event: string, listener: (...args: unknown[]) => void): unknown;
+  onAny?(listener: (event: string, ...args: unknown[]) => void): unknown;
   volatile?: { emit(event: string, payload?: unknown): unknown };
+  conn?: { transport?: { writable?: boolean } };
 }
 
 export async function attachSocketIo(input: {
@@ -185,6 +187,7 @@ export async function attachSocketIo(input: {
   maximumReplayEvents?: number;
 }): Promise<{ connectionId: string; close(): void }> {
   const connectionId = input.socket.id || randomUUID();
+  let closed = false;
   await input.hub.attach({
     connection: {
       id: connectionId,
@@ -192,35 +195,92 @@ export async function attachSocketIo(input: {
         input.socket.emit("guildgate:event", JSON.parse(payload) as unknown);
       },
       close(_code, reason) {
+        if (closed) return;
+        closed = true;
         input.socket.emit("guildgate:close", { reason });
         input.socket.disconnect(true);
+      },
+      get bufferedAmount() {
+        return input.socket.conn?.transport?.writable === false ? Number.POSITIVE_INFINITY : 0;
       },
     },
     origin: input.origin ?? socketHeader(input.socket, "origin"),
     sessionToken: input.sessionToken ?? stringValue(input.socket.handshake?.auth?.sessionToken),
   });
+
+
   input.socket.on("guildgate:subscribe", (...args) => {
-    const message = objectValue(args[0]);
-    const channel = stringValue(message.channel);
-    if (!channel) return;
-    void input.hub.subscribe({
-      connectionId,
-      channel,
-      authorize: (session, target) => input.authorize({ userId: session.userId, sessionIdHash: session.idHash, channel: target }),
-    }).then(async (subscribed) => {
-      const afterSequence = numberValue(message.afterSequence);
-      if (subscribed && input.eventLog && afterSequence !== undefined && afterSequence >= 0) {
-        const events = await input.eventLog.replay(channel, afterSequence, Math.max(1, Math.min(5_000, input.maximumReplayEvents ?? 500)));
-        for (const event of events) input.socket.emit("guildgate:replay", event);
-      }
-    });
+    void processClientMessage("subscribe", args);
   });
   input.socket.on("guildgate:unsubscribe", (...args) => {
-    const channel = stringValue(objectValue(args[0]).channel);
-    if (channel) input.hub.unsubscribe(connectionId, channel);
+    void processClientMessage("unsubscribe", args);
   });
-  input.socket.on("disconnect", () => input.hub.detach(connectionId));
-  return { connectionId, close: () => input.hub.detach(connectionId) };
+  input.socket.on("guildgate:heartbeat", (...args) => {
+    void processClientMessage("heartbeat", args);
+  });
+  input.socket.on("disconnect", () => {
+    closed = true;
+    input.hub.detach(connectionId);
+  });
+
+  return {
+    connectionId,
+    close() {
+      if (closed) return;
+      closed = true;
+      input.hub.detach(connectionId);
+      input.socket.disconnect(true);
+    },
+  };
+
+  async function processClientMessage(type: "subscribe" | "unsubscribe" | "heartbeat", args: unknown[]): Promise<void> {
+    const acknowledgement = typeof args.at(-1) === "function" ? args.at(-1) as (value: unknown) => void : undefined;
+    const message = objectValue(args[0]);
+    try {
+      const accepted = await input.hub.acceptMessage(connectionId, JSON.stringify({ ...message, type })) as {
+        type?: string;
+        channel?: string;
+        afterSequence?: number;
+      } | null;
+      if (!accepted) return;
+      if (type === "heartbeat") {
+        input.socket.emit("guildgate:heartbeat", { timestamp: Date.now() });
+        acknowledgement?.({ ok: true });
+        return;
+      }
+      const channel = stringValue(accepted.channel);
+      if (!channel) {
+        acknowledgement?.({ ok: false, code: "INVALID_CHANNEL" });
+        return;
+      }
+      if (type === "unsubscribe") {
+        input.hub.unsubscribe(connectionId, channel);
+        acknowledgement?.({ ok: true, channel });
+        return;
+      }
+      const subscribed = await input.hub.subscribe({
+        connectionId,
+        channel,
+        authorize: (session, target) => input.authorize({ userId: session.userId, sessionIdHash: session.idHash, channel: target }),
+      });
+      if (subscribed && input.eventLog) {
+        const afterSequence = numberValue(accepted.afterSequence);
+        if (afterSequence !== undefined && afterSequence >= 0) {
+          const events = await input.eventLog.replay(channel, afterSequence, Math.max(1, Math.min(5_000, input.maximumReplayEvents ?? 500)));
+          for (const event of events) input.socket.emit("guildgate:replay", event);
+        }
+      }
+      acknowledgement?.({ ok: subscribed, channel });
+    } catch {
+      acknowledgement?.({ ok: false, code: "INVALID_REALTIME_MESSAGE" });
+      if (!closed) {
+        closed = true;
+        input.socket.emit("guildgate:close", { reason: "Invalid realtime message" });
+        input.socket.disconnect(true);
+        input.hub.detach(connectionId);
+      }
+    }
+  }
 }
 
 function socketHeader(socket: SocketIoLike, name: string): string | undefined {

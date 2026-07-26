@@ -51,7 +51,9 @@ export function createRealtimeHub(input: {
   const origins = new Set(input.allowedOrigins.map(normalizeOrigin));
   const connections = new Map<string, AttachedConnection>();
   const bySession = new Map<string, Set<string>>();
+  let checkingConnections = false;
   const heartbeat = setInterval(() => { void checkConnections(); }, input.heartbeatIntervalMs ?? 25_000);
+  (heartbeat as unknown as { unref?: () => void }).unref?.();
 
   return {
     async attach({ connection, origin, sessionToken }) {
@@ -99,6 +101,14 @@ export function createRealtimeHub(input: {
       }
       if (!await authorize(record.session, channel)) {
         await send(record, { type: "error", code: "SUBSCRIPTION_DENIED", channel });
+        return false;
+      }
+      // Authorization may be asynchronous. Re-check connection state and capacity so
+      // concurrent subscription requests cannot bypass the configured limit.
+      if (connections.get(connectionId) !== record) return false;
+      if (!record.subscriptions.has(channel) && record.subscriptions.size >= (input.maximumSubscriptions ?? 20)) {
+        record.connection.close(1008, "Subscription limit exceeded");
+        removeConnection(connectionId);
         return false;
       }
       record.subscriptions.add(channel);
@@ -154,7 +164,10 @@ export function createRealtimeHub(input: {
           removeConnection(record.connection.id);
           continue;
         }
-        tasks.push(send(record, payload));
+        tasks.push(send(record, payload).catch(() => {
+          record.connection.close(1011, "Realtime delivery failed");
+          removeConnection(record.connection.id);
+        }));
       }
       await Promise.allSettled(tasks);
     },
@@ -197,28 +210,36 @@ export function createRealtimeHub(input: {
   }
 
   async function checkConnections(): Promise<void> {
-    const now = Date.now();
-    for (const [id, record] of [...connections.entries()]) {
-      if (now - record.lastSeenAtMs > (input.idleTimeoutMs ?? 60_000)) {
-        record.connection.close(1001, "Idle timeout");
-        removeConnection(id);
-        continue;
-      }
-      if (now - record.createdAtMs > (input.maximumLifetimeMs ?? 6 * 60 * 60_000)) {
-        record.connection.close(1001, "Connection lifetime reached");
-        removeConnection(id);
-        continue;
-      }
-      if (now - record.lastSessionValidatedAtMs >= (input.sessionValidationIntervalMs ?? 60_000)) {
-        record.lastSessionValidatedAtMs = now;
-        const session = await input.sessions.validate(record.sessionToken).catch(() => null);
-        if (!session) {
-          record.connection.close(1008, "Session expired or revoked");
+    if (checkingConnections) return;
+    checkingConnections = true;
+    try {
+      const now = Date.now();
+      for (const [id, record] of [...connections.entries()]) {
+        if (connections.get(id) !== record) continue;
+        if (now - record.lastSeenAtMs > (input.idleTimeoutMs ?? 60_000)) {
+          record.connection.close(1001, "Idle timeout");
           removeConnection(id);
-        } else {
-          record.session = session;
+          continue;
+        }
+        if (now - record.createdAtMs > (input.maximumLifetimeMs ?? 6 * 60 * 60_000)) {
+          record.connection.close(1001, "Connection lifetime reached");
+          removeConnection(id);
+          continue;
+        }
+        if (now - record.lastSessionValidatedAtMs >= (input.sessionValidationIntervalMs ?? 60_000)) {
+          record.lastSessionValidatedAtMs = now;
+          const session = await input.sessions.validate(record.sessionToken).catch(() => null);
+          if (connections.get(id) !== record) continue;
+          if (!session) {
+            record.connection.close(1008, "Session expired or revoked");
+            removeConnection(id);
+          } else {
+            record.session = session;
+          }
         }
       }
+    } finally {
+      checkingConnections = false;
     }
   }
 }

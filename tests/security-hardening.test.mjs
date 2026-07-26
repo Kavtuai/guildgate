@@ -150,7 +150,11 @@ test("token cipher rejects malformed payload sizes and authenticates ciphertext"
   const cipher = createTokenCipher({ keys: { current: key }, activeKeyId: "current" });
   const encrypted = cipher.encrypt("token");
   assert.equal(cipher.decrypt(encrypted), "token");
-  assert.throws(() => cipher.decrypt(encrypted.replace(/.$/, "A")));
+  const tamperedParts = encrypted.split(".");
+  const tamperedTag = Buffer.from(tamperedParts[3], "base64url");
+  tamperedTag[0] ^= 1;
+  tamperedParts[3] = tamperedTag.toString("base64url");
+  assert.throws(() => cipher.decrypt(tamperedParts.join(".")));
   assert.throws(() => cipher.decrypt("x".repeat(140_000)), /too large/);
 });
 
@@ -200,7 +204,7 @@ test("PostgreSQL idempotency acquisition uses insert-on-conflict without overwri
   };
   const pool = { async query(text) { statements.push(text); return { rows: [] }; }, async connect() { return client; } };
   const adapter = createPostgresAdapter({ pool, prefix: "gg" });
-  const result = await adapter.stores.idempotency.begin({ key: "k", requestHash: "h", state: "inflight", createdAtMs: 1, expiresAtMs: Date.now() + 1000 });
+  const result = await adapter.stores.idempotency.begin({ key: "k", requestHash: "h", reservationId: "reservation-one", state: "inflight", createdAtMs: 1, expiresAtMs: Date.now() + 1000 });
   assert.equal(result.status, "started");
   assert.equal(statements.some((text) => text.includes("DO UPDATE SET expires_at=EXCLUDED.expires_at")), false);
 });

@@ -1,50 +1,54 @@
-# Independent review handoff
+# External review guide
 
-This document gives an external reviewer a compact starting point. It does not claim that an independent review has already taken place.
+This document defines a practical handoff for an independent review. It does not state that an external audit has already occurred.
 
 ## Review target
 
-- package: `@kavtuai/guildgate@1.0.0`
-- runtime: Node.js 22 or newer
-- source archive and npm tarball produced from the same release commit
-- public contract markers: action `1.0`, store `1.0`, realtime `1.0`
+- package: `@kavtuai/guildgate@1.1.0`
+- runtime: Node.js 22 and 24
+- adapter contract: `1.1`
+- action contract: `1.0`
+- realtime contract: `1.0`
 
-## Priority paths
+## High-value review paths
 
-Review these paths first:
+1. Session token creation, rotation, revocation and cookie clearing.
+2. CSRF, exact-origin and production loopback validation.
+3. Idempotency reservation ownership and late-settlement replay.
+4. Transaction finality, nested savepoints and post-commit failures.
+5. Redis lease renewal, fencing tokens, cache tag Lua scripts and session caps.
+6. PostgreSQL advisory locking, reservation predicates, cursor queries and outbox claims.
+7. WebSocket, Socket.IO and SSE authorization, replay, rate, size and backpressure controls.
+8. Error redaction, audit redaction, SVG output and bounded serialization.
+9. Package exports, CLI entry points, GitHub OIDC publication and provenance.
 
-1. `src/kernel.ts`: action order, authorization, idempotency, transactions, locks, audit and error responses
-2. `src/session.ts` and `src/security.ts`: token handling, cookies, origin and CSRF checks
-3. `src/discord/oauth.ts`: state binding, callback validation and credential storage
-4. `src/realtime/`: subscription authorization, replay, revocation, backpressure and outbox delivery
-5. `src/postgres.ts` and `src/redis.ts`: atomicity, leases, fencing, claims and expiration
-6. `src/operator.ts`: owner boundaries and public session data
-7. `src/analytics/charts.ts`: untrusted labels and theme values in SVG output
-8. `.github/workflows/publish.yml`: release identity, OIDC and provenance
+## Reproduction commands
 
-## Abuse cases
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run test:coverage
+npm run security:verify
+npm run test:load
+npm pack --dry-run
+```
 
-- replay a consumed OAuth state from another browser
-- send an unsafe request without the expected origin or CSRF token
-- reuse an idempotency key with a different body
-- race two first-use idempotency reservations
-- keep writing after a lease expires and another worker receives a newer fence
-- request retained realtime events after subscription denial
-- revoke a session while the user has open WebSocket and SSE connections
-- send malformed JSON, oversized channels and slow-consumer traffic
-- inject markup through chart labels, colors, fonts or titles
-- trigger hidden application errors containing token-shaped fields
-- return custom session metadata that contains private application fields
+For live stores, run the `service-integration` GitHub Actions job or provide disposable PostgreSQL and Redis services, install compatible `pg` and `redis` clients in the test workspace, and run:
 
-## Evidence to record
+```bash
+GUILDGATE_SERVICE_TESTS=1 npm run test:services
+```
 
-A useful review report should include:
+## Evidence to retain
 
-- reviewed commit and package integrity value
-- tools and manual methods used
-- finding identifier, severity, impact and reproduction
-- fixed commit and regression test
-- unresolved assumptions or deployment-specific requirements
-- reviewer name, organization and review date
+- exact commit and package tarball integrity
+- Node.js and service versions
+- test and coverage output
+- migration SQL reviewed
+- findings with severity, affected paths and reproduction
+- remediation commit and retest result
 
-Private findings should use GitHub private vulnerability reporting. Real tokens, user records and production credentials must not be placed in the report.
+## Boundaries
+
+The reviewer should separate package defects from consuming-application policy. GuildGate cannot determine whether a Discord role should authorize a product action, whether a reverse proxy forwards trustworthy client IP information or whether an application consumer handles outbox events idempotently.

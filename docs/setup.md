@@ -3,8 +3,8 @@
 ## Install the source archive
 
 ```bash
-unzip GuildGate-1.0.0-kavtuai.zip
-cd guildgate-1.0.0
+unzip GuildGate-1.1.0-kavtuai.zip
+cd guildgate-1.1.0
 npm ci
 npm run release:verify
 ```
@@ -56,7 +56,7 @@ Create a separate empty directory:
 mkdir guildgate-consumer-test
 cd guildgate-consumer-test
 npm init -y
-npm install /path/to/kavtuai-guildgate-1.0.0.tgz
+npm install /path/to/kavtuai-guildgate-1.1.0.tgz
 node -e "import('@kavtuai/guildgate').then(m => console.log(typeof m.createGuildGate))"
 npx guildgate-doctor --help
 npx guildgate-migration --help
@@ -90,4 +90,4 @@ npm run release:verify
 npm pack --json
 ```
 
-The release tag must equal `v` plus the `package.json` version. Version `1.0.0` must pass `npm run release:verify`; the maintainer audit is recorded in `SECURITY_AUDIT.md`.
+The release tag must equal `v` plus the `package.json` version. Version `1.1.0` must pass `npm run release:verify`; the maintainer audit is recorded in `SECURITY_AUDIT.md`.

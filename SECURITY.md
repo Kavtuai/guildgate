@@ -4,8 +4,9 @@
 
 | Version | Status |
 |---|---|
-| `1.0.x` | Supported |
-| `0.1.x` | Unsupported; upgrade to `1.0.x` |
+| `1.1.x` | Supported |
+| `1.0.x` | Security fixes only; upgrade to `1.1.x` |
+| `0.1.x` | Unsupported; upgrade to `1.1.x` |
 | Older versions | Unsupported |
 
 The newest stable minor line receives security fixes. A longer support period may be announced for a specific release.

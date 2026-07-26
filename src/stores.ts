@@ -15,6 +15,7 @@ import type {
 
 export interface SessionStore {
   get(idHash: string): Promise<SessionRecord | null>;
+  create?(record: SessionRecord, maximumSessionsPerUser: number): Promise<void>;
   set(record: SessionRecord): Promise<void>;
   delete(idHash: string): Promise<void>;
   listByUser(userId: string): Promise<SessionRecord[]>;
@@ -45,8 +46,9 @@ export interface CacheStore {
 
 export interface IdempotencyStore {
   begin(record: IdempotencyRecord): Promise<IdempotencyBeginResult>;
-  complete(key: string, response: unknown, expiresAtMs: number): Promise<void>;
-  fail(key: string): Promise<void>;
+  complete(key: string, response: unknown, expiresAtMs: number, reservationId?: string): Promise<boolean | void>;
+  renew?(key: string, expiresAtMs: number, reservationId?: string): Promise<boolean>;
+  fail(key: string, reservationId?: string): Promise<boolean | void>;
   get(key: string): Promise<IdempotencyRecord | null>;
 }
 
@@ -57,9 +59,22 @@ export interface LockStore {
   renew?(key: string, token: string, ttlMs: number): Promise<boolean>;
 }
 
+export interface AuditPage {
+  items: AuditEvent[];
+  nextCursor?: string;
+}
+
+export interface AuditListFilter {
+  userId?: string;
+  action?: string;
+  cursor?: string;
+  limit?: number;
+}
+
 export interface AuditStore {
   write(event: AuditEvent): Promise<void>;
-  list?(filter?: { userId?: string; action?: string; limit?: number }): Promise<AuditEvent[]>;
+  list?(filter?: Omit<AuditListFilter, "cursor">): Promise<AuditEvent[]>;
+  listPage?(filter?: AuditListFilter): Promise<AuditPage>;
 }
 
 export interface OutboxStore {

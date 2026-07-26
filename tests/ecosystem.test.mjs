@@ -24,9 +24,11 @@ test("discord.js adapter checks user and bot permissions without importing disco
     isReady: () => true,
     ws: { ping: 15 },
   });
-  const decision = await adapter.authorize({ guildId: "1", userId: "user", userPermissions: ["MANAGE_GUILD"], botPermissions: ["MANAGE_GUILD"] });
+  const { authorize, getMember, status } = adapter;
+  const decision = await authorize({ guildId: "1", userId: "user", userPermissions: ["MANAGE_GUILD"], botPermissions: ["MANAGE_GUILD"] });
   assert.equal(decision.allowed, true);
-  assert.equal(adapter.status().websocketPingMs, 15);
+  assert.equal((await getMember("1", "user")).id, "user");
+  assert.equal(status().websocketPingMs, 15);
 });
 
 test("Hono adapter returns a web-standard JSON response", async () => {

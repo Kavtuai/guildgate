@@ -1,7 +1,7 @@
 {
   "name": "@kavtuai/guildgate",
-  "version": "1.0.0",
-  "description": "Owner-controlled security, realtime, storage, operations and analytics infrastructure for Discord bot dashboards.",
+  "version": "1.1.0",
+  "description": "Guarded action kernel and security, realtime, storage, operations, and analytics infrastructure for Discord dashboards.",
   "type": "module",
   "license": "MIT",
   "author": "kavtuai",
@@ -14,18 +14,23 @@
   },
   "homepage": "https://github.com/Kavtuai/guildgate#readme",
   "keywords": [
+    "action-kernel",
     "analytics",
     "cache",
     "dashboard",
     "discord",
+    "discord-dashboard",
     "distributed-lock",
     "hono",
+    "idempotency",
     "monitoring",
     "oauth2",
     "opentelemetry",
+    "optimistic-concurrency",
     "postgresql",
     "rate-limit",
     "security",
+    "socket.io",
     "sse",
     "transactional-outbox",
     "typescript",
@@ -134,8 +139,11 @@
     "test:contracts": "node --test tests/contracts.test.mjs",
     "test:load": "node scripts/load-test.mjs",
     "migration:print": "node bin/guildgate-migration.mjs",
-    "release:verify": "npm run typecheck && npm test && npm run security:verify && npm run test:load && npm run pack:check",
-    "security:verify": "node scripts/security-verify.mjs"
+    "release:verify": "npm run typecheck && npm test && npm run test:coverage && npm run security:verify && npm run test:load && npm run pack:check",
+    "security:verify": "node scripts/security-verify.mjs",
+    "test:reliability": "npm run build && node --test tests/reliability.test.mjs",
+    "test:coverage": "npm run build && node scripts/run-coverage.mjs",
+    "test:services": "npm run build && node --test tests/service-integration.test.mjs"
   },
   "publishConfig": {
     "access": "public"
