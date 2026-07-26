@@ -1,9 +1,32 @@
 #!/usr/bin/env node
 import { readFile, readdir } from "node:fs/promises";
-import { extname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { extname, join, relative, resolve } from "node:path";
 
-const root = fileURLToPath(new URL("../", import.meta.url));
+const args = process.argv.slice(2);
+
+if (args.includes("--help") || args.includes("-h")) {
+  console.log([
+    "Usage: guildgate-writing-check [options]",
+    "",
+    "Checks documentation files in the current project directory.",
+    "",
+    "Options:",
+    "  --root <path>  Check another project directory.",
+    "  -h, --help     Show this help message.",
+  ].join("\n"));
+  process.exit(0);
+}
+
+const rootOptionIndex = args.indexOf("--root");
+
+if (rootOptionIndex !== -1 && !args[rootOptionIndex + 1]) {
+  console.error("The --root option requires a directory path.");
+  process.exit(2);
+}
+
+const root = resolve(
+  rootOptionIndex === -1 ? process.cwd() : args[rootOptionIndex + 1],
+);
 const includedRoots = [
   "README.md",
   "README.tr.md",
@@ -67,6 +90,7 @@ async function filesUnder(path) {
     }
     return files;
   } catch (error) {
+    if (error?.code === "ENOENT") return [];
     if (error?.code === "ENOTDIR") return [path];
     throw error;
   }

@@ -1,7 +1,22 @@
 #!/usr/bin/env node
 import { Buffer } from "node:buffer";
 
-const isJson = process.argv.includes("--json");
+const args = process.argv.slice(2);
+
+if (args.includes("--help") || args.includes("-h")) {
+  console.log([
+    "Usage: guildgate-doctor [options]",
+    "",
+    "Checks the GuildGate environment and production safety settings.",
+    "",
+    "Options:",
+    "  --json      Print machine-readable JSON output.",
+    "  -h, --help  Show this help message.",
+  ].join("\n"));
+  process.exit(0);
+}
+
+const isJson = args.includes("--json");
 const environment = process.env.GUILDGATE_ENVIRONMENT ?? process.env.NODE_ENV ?? "development";
 const results = [];
 

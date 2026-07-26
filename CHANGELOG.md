@@ -1,3 +1,11 @@
+## 0.1.1 - 2026-07-26
+
+### Fixed
+
+- Added help output for both command-line tools.
+- Made the writing checker operate on the current project directory.
+- Missing documentation paths are now skipped instead of causing an error.
+- Added regression tests for installed CLI behavior.
 # Changelog
 
 All notable changes are recorded in this file. The project follows Semantic Versioning after `1.0.0`. Before `1.0.0`, a minor release may contain an API change with migration notes.

@@ -1,6 +1,6 @@
 {
   "name": "@kavtuai/guildgate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Security and control primitives for Discord bot dashboards.",
   "type": "module",
   "license": "MIT",
