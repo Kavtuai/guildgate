@@ -3,56 +3,106 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published GitHub release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ github.event.release.tag_name }}
+  group: npm-publish-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   verify:
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
+
       - run: npm ci --ignore-scripts
-      - name: Verify release tag
-        run: node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v' + v) process.exit(1)"
+
+      - name: Verify published release and package version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *)
+              echo "Release tag must start with v." >&2
+              exit 1
+              ;;
+          esac
+
+          version="$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "v$version"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}"
+
+          published_tag="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              --jq 'select(.draft == false) | .tag_name'
+          )"
+          test "$published_tag" = "$RELEASE_TAG"
+
       - run: npm run release:verify
+
       - name: Create verified package tarball
-        run: npm pack --pack-destination release-artifact
+        run: |
+          mkdir -p release-artifact
+          npm pack --pack-destination release-artifact
+          test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+
       - uses: actions/upload-artifact@v6
         with:
-          name: verified-package-${{ github.event.release.tag_name }}
+          name: verified-package-${{ env.RELEASE_TAG }}
           path: release-artifact/*.tgz
           if-no-files-found: error
           retention-days: 1
 
   publish:
     needs: verify
-    if: startsWith(github.event.release.tag_name, 'v')
+    if: needs.verify.result == 'success'
     runs-on: ubuntu-latest
     environment: npm
     permissions:
       contents: read
       id-token: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+
       - name: Require trusted-publishing toolchain
-        run: npm install --global npm@^11.5.1 && node -e "const [M,m]=process.versions.node.split('.').map(Number); if (M<22 || (M===22 && m<14)) process.exit(1)"
+        run: |
+          npm install --global npm@^11.5.1
+          node -e "const [M,m]=process.versions.node.split('.').map(Number); if (M<22 || (M===22 && m<14)) process.exit(1)"
+
       - name: Verify release tag
-        run: node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v' + v) process.exit(1)"
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "$RELEASE_TAG" = "v$version"
+
       - name: Ensure version is unpublished
         run: |
           name="$(node -p "require('./package.json').name")"
@@ -61,9 +111,13 @@ jobs:
             echo "$name@$version already exists" >&2
             exit 1
           fi
+
       - uses: actions/download-artifact@v6
         with:
-          name: verified-package-${{ github.event.release.tag_name }}
+          name: verified-package-${{ env.RELEASE_TAG }}
           path: release-artifact
+
       - name: Publish verified tarball
-        run: npm publish release-artifact/*.tgz --access public
+        run: |
+          test "$(find release-artifact -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          npm publish release-artifact/*.tgz --access public
