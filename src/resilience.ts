@@ -67,7 +67,7 @@ export async function runWithDeadline<T>(input: {
     let parentAbortHandler: (() => void) | undefined;
     const timeoutOutcome = new Promise<{ kind: "timeout" }>((resolve) => {
       timer = setTimeout(() => resolve({ kind: "timeout" }), remaining);
-      // The awaited deadline race must keep this timer referenced on Node.js 22.
+      (timer as unknown as { unref?: () => void }).unref?.();
     });
     const parentOutcome = new Promise<{ kind: "parent"; reason: unknown }>((resolve) => {
       if (!input.parentSignal) return;

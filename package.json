@@ -1,6 +1,6 @@
 {
   "name": "@kavtuai/guildgate",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Guarded action kernel and security, realtime, storage, operations, and analytics infrastructure for Discord dashboards.",
   "type": "module",
   "license": "MIT",
@@ -43,19 +43,14 @@
     "dist",
     "bin",
     "docs",
+    "examples",
     "README.md",
     "README.tr.md",
     "CHANGELOG.md",
-    "TEST_REPORT.md",
     "LICENSE",
     "SECURITY.md",
     "MIGRATION.md",
-    "SECURITY_AUDIT.md",
-    "OPERATING_LIMITS.md",
-    "examples",
-    "ROADMAP.md",
-    "LOAD_TEST_REPORT.json",
-    "EXTERNAL_REVIEW_GUIDE.md"
+    "OPERATING_LIMITS.md"
   ],
   "exports": {
     ".": {
@@ -133,20 +128,25 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "test": "npm run build && npm run writing:check && node --test tests/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "pack:check": "npm pack --dry-run",
-    "prepublishOnly": "npm test && npm run pack:check",
+    "pack:check": "npm run build && npm run pack:inspect",
+    "prepublishOnly": "npm run release:verify",
     "writing:check": "node ./bin/guildgate-writing-check.mjs",
     "test:contracts": "node --test tests/contracts.test.mjs",
     "test:load": "node scripts/load-test.mjs",
     "migration:print": "node bin/guildgate-migration.mjs",
-    "release:verify": "npm run typecheck && npm test && npm run test:coverage && npm run security:verify && npm run test:load && npm run pack:check",
+    "release:verify": "npm run format:check && npm run metadata:check && npm run typecheck && npm test && npm run test:coverage && npm run security:verify && npm run secret:scan && npm run test:load && npm run pack:inspect",
     "security:verify": "node scripts/security-verify.mjs",
     "test:reliability": "npm run build && node --test tests/reliability.test.mjs",
     "test:coverage": "npm run build && node scripts/run-coverage.mjs",
-    "test:services": "npm run build && node --test tests/service-integration.test.mjs"
+    "test:services": "npm run build && node --test tests/service-integration.test.mjs",
+    "format:check": "node scripts/format-check.mjs",
+    "metadata:check": "node scripts/release-metadata-check.mjs",
+    "secret:scan": "node scripts/secret-scan.mjs",
+    "pack:inspect": "node scripts/package-inspect.mjs"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "devDependencies": {
     "@types/node": "22.19.15",

@@ -6,40 +6,64 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: npm-publish-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Verify release tag
+        run: node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v' + v) process.exit(1)"
+      - run: npm run release:verify
+      - name: Create verified package tarball
+        run: npm pack --pack-destination release-artifact
+      - uses: actions/upload-artifact@v6
+        with:
+          name: verified-package-${{ github.event.release.tag_name }}
+          path: release-artifact/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
+    needs: verify
     if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-      - run: npm ci
+      - name: Require trusted-publishing toolchain
+        run: npm install --global npm@^11.5.1 && node -e "const [M,m]=process.versions.node.split('.').map(Number); if (M<22 || (M===22 && m<14)) process.exit(1)"
       - name: Verify release tag
-        run: node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v' + v) { console.error('Tag and package version differ'); process.exit(1) }"
-      - run: npm run release:verify
-      - name: Check npm registry
-        id: registry
-        shell: bash
+        run: node -e "const v=require('./package.json').version; if (process.env.GITHUB_REF_NAME !== 'v' + v) process.exit(1)"
+      - name: Ensure version is unpublished
         run: |
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
           if npm view "$name@$version" version --json >/dev/null 2>&1; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "$name@$version already exists; publish will be skipped."
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "$name@$version already exists" >&2
+            exit 1
           fi
-      - name: Publish package
-        if: steps.registry.outputs.published != 'true'
-        run: npm publish --access public --provenance
+      - uses: actions/download-artifact@v6
+        with:
+          name: verified-package-${{ github.event.release.tag_name }}
+          path: release-artifact
+      - name: Publish verified tarball
+        run: npm publish release-artifact/*.tgz --access public

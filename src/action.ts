@@ -1,4 +1,5 @@
 import type { CacheManager } from "./cache.js";
+import { actionContractVersion } from "./contracts.js";
 import type { RetryOptions } from "./resilience.js";
 import type { GuildGateStores } from "./stores.js";
 import type { OptimisticRevisionPolicy, TransactionHooks, TransactionOptions, TransactionScope } from "./transactions.js";
@@ -93,9 +94,26 @@ export interface ActionDefinition<I, O> {
 }
 
 export interface DefinedAction<I, O> {
-  readonly definition: ActionDefinition<I, O>;
+  readonly contractVersion: typeof actionContractVersion;
+  readonly definition: Readonly<ActionDefinition<I, O>>;
 }
 
+const definedActions = new WeakSet<object>();
+
 export function defineAction<I, O>(definition: ActionDefinition<I, O>): DefinedAction<I, O> {
-  return Object.freeze({ definition });
+  const action = Object.freeze({
+    contractVersion: actionContractVersion,
+    definition: Object.freeze({ ...definition }),
+  });
+  definedActions.add(action);
+  return action;
+}
+
+export function isDefinedAction(value: unknown): value is DefinedAction<unknown, unknown> {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && definedActions.has(value as object)
+    && (value as { contractVersion?: unknown }).contractVersion === actionContractVersion,
+  );
 }

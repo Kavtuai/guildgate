@@ -4,10 +4,11 @@ GuildGate, Discord bot panellerinin sunucu tarafı için hazırlanmış korumal�
 
 Kütüphane panel arayüzü üretmez ve uygulama verisinin sahibi olmaz. Veri tabanını, HTTP çatısını, Discord istemcisini, telemetri sistemini ve grafiklerin nerede gösterileceğini siz seçersiniz.
 
-Güncel paket: `@kavtuai/guildgate@1.1.0`
+Güncel paket: `@kavtuai/guildgate@1.1.1`
+
 Gerekli çalışma ortamı: Node.js 22 veya daha yeni
 
-`1.1.0`, kararlı sözleşme hattını transaction kesinliği, reservation sahipliği, katı yanıt süresi, cursor pagination ve realtime transport eşitliği çevresinde güçlendirir. Bakımcı incelemesi [SECURITY_AUDIT.md](SECURITY_AUDIT.md) içinde yayımlanır; paket bağımsız üçüncü taraf denetiminden geçmiş gibi sunulmaz.
+`1.1.1`, `1.1` adapter sözleşmesini korur; action kimliği, operator payload doğrulaması, paket içeriği denetimi, secret taraması ve tokensız yayın zincirini sıkılaştırır. Paket bağımsız üçüncü taraf denetiminden geçmiş gibi sunulmaz.
 
 ## Kurulum
 
@@ -68,7 +69,7 @@ GuildGate bu paketleri doğrudan içe aktarmaz. Adapter'lar küçük uyumlu aray
 - line, bar ve donut SVG grafikleri
 - panel tabloları için sütun/satır modeli
 
-## 1.1.0 güvenilirlik modeli
+## Güvenilirlik modeli
 
 GuildGate, domain yazımı commit edildikten sonra cache, audit, realtime veya gözlemci callback'i hata verse bile commit'i kesin kabul eder. Commit sonrasındaki sorunlar response metadata ve telemetriye yazılır; sahte rollback oluşturmaz ve domain işlemini tekrar çalıştırmaz. İç içe PostgreSQL işlemleri savepoint kullanır; iç transaction callback'leri yalnızca savepoint başarıyla tamamlanınca dış transaction'a aktarılır.
 
@@ -394,16 +395,16 @@ npx guildgate-migration --help
 
 ## Sürüm durumu
 
-`1.1.0`, güçlendirilmiş kararlı sürümdür. Son yerel release kontrolünde 76 deterministik unit ve adapter regresyon testi sıfır hatayla tamamlandı; PostgreSQL ve Redis için hazırlanan iki canlı servis testi yerelde atlandı ve CI içinde geçici servislerle çalışacak şekilde etkin bırakıldı. Yerleşik Node.js coverage sonucu satırlarda %82,25, branch’lerde %73,57 ve fonksiyonlarda %73,30 olarak ölçüldü; üç değer de zorunlu eşiklerin üzerindedir. Coverage sırasında test dosyaları tek tek çalıştırılarak ölçüm yükünün deadline ve lease yenileme zamanlamasını bozması engellenir. Sürüm ayrıca CodeQL, paket kimliği ve credential-pattern taraması, 5.000 işlemlik yük testi, kaynak manifesti doğrulaması ve temiz npm tüketici kurulumu içerir. Uygulamaya özel Discord yetkileri, reverse proxy politikası ve domain authorization testleri tüketici uygulamanın test paketinde kalır.
+`1.1.1`, güncel kararlı sürümdür. Yerel deterministik pakette 80 test tanımı bulunur: dış servis gerektirmeyen 78 test geçer, iki canlı servis testi ise CI içinde PostgreSQL ve Redis ile çalışır. Yayın kapısı ayrıca coverage eşiklerini, paket kimliğini, secret taramasını, 5.000 işlemlik yük testini ve packed tarball denetimini zorunlu tutar. Canlı servis testleri CI içinde geçici PostgreSQL ve Redis servisleriyle çalışır; uygulamaya özel Discord yetkileri, reverse proxy politikası ve domain authorization testleri tüketici uygulamanın test paketinde kalır.
 
 Diğer belgeler:
 
-- [ROADMAP.md](ROADMAP.md)
+- [Proje yol haritası](https://github.com/Kavtuai/guildgate/blob/main/ROADMAP.md)
 - [MIGRATION.md](MIGRATION.md)
 - [OPERATING_LIMITS.md](OPERATING_LIMITS.md)
 - [SECURITY.md](SECURITY.md)
-- [SECURITY_AUDIT.md](SECURITY_AUDIT.md)
-- [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md)
+- [Bakımcı güvenlik incelemesi](https://github.com/Kavtuai/guildgate/blob/main/SECURITY_AUDIT.md)
+- [Harici inceleme rehberi](https://github.com/Kavtuai/guildgate/blob/main/EXTERNAL_REVIEW_GUIDE.md)
 - [docs/tr/tehdit-modeli.md](docs/tr/tehdit-modeli.md)
 - [docs/contracts/stable-adapters.md](docs/contracts/stable-adapters.md)
 - [docs/tr/yapilandirma.md](docs/tr/yapilandirma.md)

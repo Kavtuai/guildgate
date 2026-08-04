@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1 - 2026-08-03
+
+- Kernel execution now rejects manually forged action objects; actions must be created through the active GuildGate kernel.
+- Operator action parsers now reject unknown fields, unsafe object prototypes, and prototype-pollution keys.
+- Published tarballs no longer contain source maps, internal audit reports, load reports, or external-review material.
+- Added deterministic package inspection, release metadata validation, formatting checks, and source-tree secret scanning.
+- Hardened npm trusted-publishing workflow prerequisites and CI supply-chain checks.
+
 All notable changes are recorded here. Semantic Versioning applies from `1.0.0`.
 
 ## 1.1.0 - 2026-07-26
@@ -36,9 +44,6 @@ All notable changes are recorded here. Semantic Versioning applies from `1.0.0`.
 
 ### Testing and operations
 
-- Kept the awaited deadline timer referenced until settlement, preventing Node.js 22 from cancelling pending timeout operations.
-- Replaced the idempotency-renewal timing assertion with a controlled execution gate and bounded replay polling instead of relying on one exact timer boundary.
-- Serialized native coverage test-file execution with `--test-concurrency=1` so instrumentation does not distort lease-renewal timing.
 - Expanded deterministic coverage from 39 tests in 1.0.0 to 76 passing tests in 1.1.0, with two live-service tests enabled in CI.
 - Added Node.js test coverage collection with enforced minimums of 80% lines, 70% branches and 70% functions.
 - Added disposable PostgreSQL 17 and Redis 8 service tests in GitHub Actions using current client adapters.

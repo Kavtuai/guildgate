@@ -4,7 +4,7 @@ This document defines a practical handoff for an independent review. It does not
 
 ## Review target
 
-- package: `@kavtuai/guildgate@1.1.0`
+- package: `@kavtuai/guildgate@1.1.1`
 - runtime: Node.js 22 and 24
 - adapter contract: `1.1`
 - action contract: `1.0`

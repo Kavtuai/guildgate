@@ -1,14 +1,13 @@
 # Test report
 
-Date: 2026-07-26
-Package: `@kavtuai/guildgate@1.1.0`
+Date: 2026-08-04
+Package: `@kavtuai/guildgate@1.1.1`
 
 ## Toolchain
 
-- Local final verification: Node.js 24.12.0
+- Node.js: 22.16.0
 - TypeScript: 5.8.3
-- Platform: Windows x64
-- CI matrix: Node.js 22 and 24
+- Platform: Linux x64
 - Runtime dependencies in the core package: 0
 - Public export paths: 16
 - CLI targets: 3
@@ -52,11 +51,14 @@ The deterministic suite covers:
 
 ## Repeated stability pass
 
-After the original timing-sensitive assertion was identified under coverage instrumentation, the idempotency-renewal test was rewritten around a controlled execution gate. It now verifies ownership after the original TTL has elapsed, releases the domain operation deliberately and polls the public replay result within a bounded deadline.
+After the release suite passed, the built deterministic suite was executed five consecutive times. Every run reported 76 passed, 0 failed and 2 live-service definitions skipped. A ciphertext-tamper assertion was changed to flip a decoded authentication-tag byte after repeated execution exposed that changing the last Base64URL character can alter only unused padding bits and decode to the same bytes.
 
-The focused reliability suite was then executed five consecutive times. Every run reported 33 passed, 0 failed, 0 skipped and 0 cancelled. The complete release verification was run afterward and reported 76 deterministic tests passed, 0 failed and two live-service definitions skipped locally.
+The load harness also completed these additional local stress references with zero failures:
 
-Coverage test files execute with `--test-concurrency=1`. This keeps instrumentation overhead from turning lease-renewal behavior into a machine-speed-dependent assertion.
+| Operations | Concurrency | Throughput | p95 | p99 |
+|---:|---:|---:|---:|---:|
+| 10,000 | 20 | 18,866.07/s | 2.17 ms | 2.87 ms |
+| 20,000 | 32 | 21,083.06/s | 2.82 ms | 3.44 ms |
 
 ## Coverage
 
@@ -64,9 +66,9 @@ Coverage test files execute with `--test-concurrency=1`. This keeps instrumentat
 
 | Metric | Result | Required |
 |---|---:|---:|
-| Lines | 82.25% | 80% |
-| Branches | 73.57% | 70% |
-| Functions | 73.30% | 70% |
+| Lines | 86.56% | 80% |
+| Branches | 77.15% | 70% |
+| Functions | 78.08% | 70% |
 
 ## Live-service test definitions
 
@@ -79,7 +81,7 @@ They are enabled with `GUILDGATE_SERVICE_TESTS=1`, `POSTGRES_URL` and `REDIS_URL
 
 ## Installed consumer test
 
-A generated `kavtuai-guildgate-1.1.0.tgz` was installed into an empty project with lifecycle scripts disabled.
+A generated `kavtuai-guildgate-1.1.1.tgz` was installed into an empty project with lifecycle scripts disabled.
 
 Verified results:
 
@@ -92,17 +94,17 @@ Consumer result: `CONSUMER_TEST_PASSED`.
 
 ## Load reference
 
-The final release-verification run executed 5,000 in-memory guarded writes with concurrency 16.
+The final release-verification run executed 5,000 in-memory guarded writes with concurrency 10.
 
 | Measurement | Result |
 |---|---:|
 | Domain executions | 5,000 |
 | Failures | 0 |
-| Duration | 604.254 ms |
-| Throughput | 8,274.67 operations/second |
-| p50 | 1.69 ms |
-| p95 | 3.18 ms |
-| p99 | 5.58 ms |
+| Duration | 340.36 ms |
+| Throughput | 14,690.15 operations/second |
+| p50 | 0.60 ms |
+| p95 | 1.29 ms |
+| p99 | 2.37 ms |
 
 This scenario contains no network, Redis, PostgreSQL or Discord request. It is a same-machine regression baseline, not a production capacity commitment.
 

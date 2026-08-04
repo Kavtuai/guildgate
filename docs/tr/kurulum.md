@@ -3,8 +3,8 @@
 ## Kaynak arşivini kurma
 
 ```bash
-unzip GuildGate-1.1.0-kavtuai.zip
-cd guildgate-1.1.0
+unzip GuildGate-1.1.1-kavtuai.zip
+cd guildgate-1.1.1
 npm ci
 npm run release:verify
 ```
@@ -52,7 +52,7 @@ npx guildgate-migration --prefix guildgate > guildgate.sql
 mkdir guildgate-consumer-test
 cd guildgate-consumer-test
 npm init -y
-npm install /paket/yolu/kavtuai-guildgate-1.1.0.tgz
+npm install /paket/yolu/kavtuai-guildgate-1.1.1.tgz
 node -e "import('@kavtuai/guildgate').then(m => console.log(typeof m.createGuildGate))"
 npx guildgate-doctor --help
 npx guildgate-migration --help
@@ -86,4 +86,4 @@ npm run release:verify
 npm pack --json
 ```
 
-Tag değeri `v` ile `package.json` sürümünün birleşimi olmalıdır. `1.1.0` sürümü `npm run release:verify` kontrolünden geçmelidir; bakımcı incelemesi `SECURITY_AUDIT.md` dosyasında kayıtlıdır.
+Tag değeri `v` ile `package.json` sürümünün birleşimi olmalıdır. Paket sürümü `npm run release:verify` kontrolünden geçmeli ve release tag değeriyle birebir eşleşmelidir. Bakımcı inceleme dosyaları kaynak depoda kalır; npm tarball içine alınmaz.
