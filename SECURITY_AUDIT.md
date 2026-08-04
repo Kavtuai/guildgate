@@ -1,7 +1,7 @@
 # Maintainer security and reliability review
 
-Date: 2026-07-26
-Reviewed version: `@kavtuai/guildgate@1.1.0`
+Date: 2026-08-04
+Reviewed version: `@kavtuai/guildgate@1.1.1`
 
 ## Scope
 
@@ -19,7 +19,6 @@ The review combined:
 - transport parity tests for WebSocket, Socket.IO and SSE
 - package-consumer installation and every public export import
 - enforced Node.js line, branch and function coverage thresholds
-- Coverage test files execute serially so instrumentation does not distort deadline and lease-renewal timing
 - source, workflow, package identity and credential-pattern checks
 - a bounded in-memory load regression
 
@@ -52,10 +51,9 @@ At the end of this maintainer pass:
 
 - 76 deterministic tests passed
 - 0 deterministic tests failed
-- 2 live-service definitions were skipped locally and remain enabled in CI
-- line coverage: 82.25%
-- branch coverage: 73.57%
-- function coverage: 73.30%
+- line coverage: 86.56%
+- branch coverage: 77.15%
+- function coverage: 78.08%
 - 46 source files and 16 public export paths passed the release security verifier
 - 5,000 load-harness operations completed with 0 failures
 - a clean consumer installed the tarball and imported every public subpath

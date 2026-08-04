@@ -18,6 +18,7 @@ import {
   createRealtimeHub,
 } from "../dist/realtime.js";
 import { createPostgresAdapter } from "../dist/postgres.js";
+import { createOperatorActions } from "../dist/operator.js";
 
 class FakeSocket extends EventEmitter {
   sent = [];
@@ -207,4 +208,37 @@ test("PostgreSQL idempotency acquisition uses insert-on-conflict without overwri
   const result = await adapter.stores.idempotency.begin({ key: "k", requestHash: "h", reservationId: "reservation-one", state: "inflight", createdAtMs: 1, expiresAtMs: Date.now() + 1000 });
   assert.equal(result.status, "started");
   assert.equal(statements.some((text) => text.includes("DO UPDATE SET expires_at=EXCLUDED.expires_at")), false);
+});
+
+test("kernel rejects forged action objects", async () => {
+  const harness = createGuildGateTestHarness();
+  const forged = { definition: { name: "forged", async execute() { return true; } } };
+  await assert.rejects(
+    () => harness.kernel.execute(forged, harness.request({ method: "GET" })),
+    (error) => error?.code === "CONFIGURATION_ERROR",
+  );
+});
+
+test("operator parsers reject extra and prototype-pollution fields", async () => {
+  const harness = createGuildGateTestHarness({ owners: ["owner-1"] });
+  const login = await harness.login("owner-1");
+  const actions = createOperatorActions({ kernel: harness.kernel });
+  const extra = await harness.kernel.execute(actions.setMaintenance, harness.request({
+    sessionToken: login.sessionToken,
+    csrfToken: login.csrfToken,
+    body: { enabled: true, unexpected: true },
+  }));
+  assert.equal(extra.ok, false);
+  assert.equal(extra.error.code, "INPUT_INVALID");
+
+  const polluted = Object.create(null);
+  polluted.enabled = true;
+  Object.defineProperty(polluted, "__proto__", { value: {}, enumerable: true });
+  const result = await harness.kernel.execute(actions.setMaintenance, harness.request({
+    sessionToken: login.sessionToken,
+    csrfToken: login.csrfToken,
+    body: polluted,
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "INPUT_INVALID");
 });

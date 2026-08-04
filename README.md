@@ -4,10 +4,11 @@ GuildGate is a guarded action kernel and infrastructure toolkit for the server s
 
 The package does not generate a dashboard UI and does not take ownership of application data. You choose the database, HTTP framework, Discord client, telemetry backend and chart placement.
 
-Current package: `@kavtuai/guildgate@1.1.0`
+Current package: `@kavtuai/guildgate@1.1.1`
+
 Required runtime: Node.js 22 or newer
 
-Version `1.1.0` hardens the stable line around transaction finality, reservation ownership, strict response deadlines, cursor pagination and realtime transport parity. The maintainer review is published in [SECURITY_AUDIT.md](SECURITY_AUDIT.md); the package does not claim an independent third-party audit.
+Version `1.1.1` keeps the `1.1` adapter contract stable and adds stricter action branding, operator payload validation, package inspection, secret scanning and a tokenless release path. The package does not claim an independent third-party audit.
 
 ## Install
 
@@ -68,7 +69,7 @@ GuildGate does not import those packages. The adapters accept small compatible i
 - line, bar and donut SVG renderers
 - table models for dashboard views
 
-## Reliability model in 1.1.0
+## Reliability model
 
 GuildGate treats a committed domain write as final even when a cache, audit, realtime or observer callback fails afterward. Post-commit problems are reported in response metadata and telemetry; they do not trigger a false rollback or repeat the domain operation. Nested PostgreSQL work uses savepoints and releases its callbacks to the outer transaction only after the savepoint succeeds.
 
@@ -421,16 +422,16 @@ npx guildgate-migration --help
 
 ## Release status
 
-`1.1.0` is the hardened stable release. The final local release pass completed 76 deterministic unit and adapter regression tests with zero failures; two PostgreSQL and Redis live-service definitions were skipped locally and remain enabled in CI with disposable services. Native coverage completed at 82.25% lines, 73.57% branches and 73.30% functions, above the enforced thresholds. Coverage executes one test file at a time so instrumentation does not distort deadline and lease-renewal timing. The release also includes CodeQL, package identity and credential-pattern scanning, a 5,000-operation load harness, source-manifest validation and npm package-consumer verification. Application-specific Discord permissions, reverse-proxy policy and domain authorization remain part of the consuming application test suite.
+`1.1.1` is the current stable release. The local deterministic suite contains 80 test definitions: 78 pass without external services and two live-service tests run against PostgreSQL and Redis in CI. The release gate also enforces coverage thresholds, package identity checks, secret scanning, a 5,000-operation load harness and packed-tarball inspection. The live-service tests run in CI with disposable PostgreSQL and Redis services; application-specific Discord permissions, reverse-proxy policy and domain authorization remain part of the consuming application test suite.
 
 See:
 
-- [ROADMAP.md](ROADMAP.md)
+- [Project roadmap](https://github.com/Kavtuai/guildgate/blob/main/ROADMAP.md)
 - [MIGRATION.md](MIGRATION.md)
 - [OPERATING_LIMITS.md](OPERATING_LIMITS.md)
 - [SECURITY.md](SECURITY.md)
-- [SECURITY_AUDIT.md](SECURITY_AUDIT.md)
-- [EXTERNAL_REVIEW_GUIDE.md](EXTERNAL_REVIEW_GUIDE.md)
+- [Maintainer security review](https://github.com/Kavtuai/guildgate/blob/main/SECURITY_AUDIT.md)
+- [External review guide](https://github.com/Kavtuai/guildgate/blob/main/EXTERNAL_REVIEW_GUIDE.md)
 - [docs/threat-model.md](docs/threat-model.md)
 - [docs/contracts/stable-adapters.md](docs/contracts/stable-adapters.md)
 - [docs/configuration.md](docs/configuration.md)

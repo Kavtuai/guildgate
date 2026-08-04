@@ -13,7 +13,6 @@ if (!files.length) throw new Error("No coverage test files were found");
 
 const child = spawn(process.execPath, [
   "--experimental-test-coverage",
-  "--test-concurrency=1",
   "--test-coverage-lines=80",
   "--test-coverage-branches=70",
   "--test-coverage-functions=70",

@@ -132,14 +132,14 @@ export function createOperatorActions(input: {
       name: "operator.sessions.list",
       authentication: "required",
       csrf: "disabled",
-      parse: (value) => optionalObject(value) as PageInput,
+      parse: parsePageInput,
       async execute(context, page) {
         return service.listSessions(context.userId!, context.session?.idHash, page);
       },
     }),
     revokeSession: input.kernel.action({
       name: "operator.sessions.revoke",
-      parse: (value) => requiredStringObject(value, "sessionId") as { sessionId: string },
+      parse: (value) => requiredStringObject(value, "sessionId", ["sessionId"], 512) as { sessionId: string },
       idempotency: { required: false, ttlMs: 60_000 },
       async execute(context, value) {
         return { revoked: await service.revokeSession(context.userId!, value.sessionId) };
@@ -157,7 +157,7 @@ export function createOperatorActions(input: {
       authentication: "required",
       csrf: "disabled",
       authorize: ownerOnly,
-      parse: (value) => optionalObject(value) as { userId?: string; action?: string; cursor?: string; limit?: number },
+      parse: parseAuditInput,
       execute: (_context, filter) => service.listAudit(filter),
     }),
     inspectPolicies: input.kernel.action({
@@ -172,13 +172,13 @@ export function createOperatorActions(input: {
       authentication: "required",
       csrf: "disabled",
       authorize: ownerOnly,
-      parse: (value) => optionalObject(value) as MetricQuery,
+      parse: parseMetricQuery,
       execute: (_context, query) => service.queryMetrics(query),
     }),
     resetRateLimit: input.kernel.action({
       name: "operator.rates.reset",
       authorize: ownerOnly,
-      parse: (value) => requiredStringObject(value, "key") as { key: string; policyName?: string },
+      parse: parseRateResetInput,
       idempotency: { required: false, ttlMs: 60_000 },
       async execute(_context, value) {
         const policy = value.policyName ? input.ratePolicies?.get(value.policyName) : undefined;
@@ -246,24 +246,72 @@ function paginate<T>(rows: T[], page: PageInput | undefined, id: (row: T) => str
   };
 }
 
-function optionalObject(value: unknown): Record<string, unknown> {
-  if (value === undefined || value === null) return {};
-  return object(value);
-}
+const dangerousObjectKeys = new Set(["__proto__", "constructor", "prototype"]);
 
-function object(value: unknown): Record<string, unknown> {
+function strictObject(value: unknown, allowedKeys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw errors.inputInvalid();
-  return value as Record<string, unknown>;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw errors.inputInvalid({ field: "body" });
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (dangerousObjectKeys.has(key) || !allowedKeys.includes(key)) throw errors.inputInvalid({ field: key });
+  }
+  return record;
 }
 
-function requiredStringObject(value: unknown, key: string): Record<string, string> {
-  const result = object(value);
-  if (typeof result[key] !== "string" || !result[key]) throw errors.inputInvalid({ field: key });
+function optionalObject(value: unknown, allowedKeys: readonly string[]): Record<string, unknown> {
+  if (value === undefined || value === null) return {};
+  return strictObject(value, allowedKeys);
+}
+
+function requiredStringObject(value: unknown, key: string, allowedKeys: readonly string[], maximumLength: number): Record<string, string> {
+  const result = strictObject(value, allowedKeys);
+  const field = result[key];
+  if (typeof field !== "string" || !field.trim() || field.length > maximumLength) throw errors.inputInvalid({ field: key });
   return result as Record<string, string>;
 }
 
+function parsePageInput(value: unknown): PageInput {
+  const result = optionalObject(value, ["cursor", "limit"]);
+  if (result.cursor !== undefined && (typeof result.cursor !== "string" || result.cursor.length > 512)) throw errors.inputInvalid({ field: "cursor" });
+  if (result.limit !== undefined && (!Number.isInteger(result.limit) || (result.limit as number) < 1 || (result.limit as number) > 200)) throw errors.inputInvalid({ field: "limit" });
+  return { ...(typeof result.cursor === "string" ? { cursor: result.cursor } : {}), ...(typeof result.limit === "number" ? { limit: result.limit } : {}) };
+}
+
+function parseAuditInput(value: unknown): { userId?: string; action?: string; cursor?: string; limit?: number } {
+  const result = optionalObject(value, ["userId", "action", "cursor", "limit"]);
+  for (const key of ["userId", "action", "cursor"] as const) {
+    const field = result[key];
+    if (field !== undefined && (typeof field !== "string" || field.length > 512)) throw errors.inputInvalid({ field: key });
+  }
+  if (result.limit !== undefined && (!Number.isInteger(result.limit) || (result.limit as number) < 1 || (result.limit as number) > 200)) throw errors.inputInvalid({ field: "limit" });
+  return result as { userId?: string; action?: string; cursor?: string; limit?: number };
+}
+
+function parseMetricQuery(value: unknown): MetricQuery {
+  const result = optionalObject(value, ["names", "from", "to", "dimensions", "limit", "order"]);
+  if (result.names !== undefined && (!Array.isArray(result.names) || result.names.length > 50 || result.names.some((item) => typeof item !== "string" || item.length > 160))) throw errors.inputInvalid({ field: "names" });
+  for (const key of ["from", "to"] as const) {
+    const field = result[key];
+    if (field !== undefined && (typeof field !== "string" || !Number.isFinite(Date.parse(field)))) throw errors.inputInvalid({ field: key });
+  }
+  if (result.dimensions !== undefined) {
+    const dimensions = strictObject(result.dimensions, Object.keys(result.dimensions as object));
+    if (Object.keys(dimensions).length > 32 || Object.entries(dimensions).some(([key, item]) => key.length > 80 || typeof item !== "string" || item.length > 256)) throw errors.inputInvalid({ field: "dimensions" });
+  }
+  if (result.limit !== undefined && (!Number.isInteger(result.limit) || (result.limit as number) < 1 || (result.limit as number) > 10_000)) throw errors.inputInvalid({ field: "limit" });
+  if (result.order !== undefined && result.order !== "asc" && result.order !== "desc") throw errors.inputInvalid({ field: "order" });
+  return result as MetricQuery;
+}
+
+function parseRateResetInput(value: unknown): { key: string; policyName?: string } {
+  const result = requiredStringObject(value, "key", ["key", "policyName"], 512);
+  if (result.policyName !== undefined && (typeof result.policyName !== "string" || result.policyName.length > 160)) throw errors.inputInvalid({ field: "policyName" });
+  return result as { key: string; policyName?: string };
+}
+
 function parseMaintenanceInput(value: unknown): { enabled: boolean; reason?: string; allowOwners?: boolean } {
-  const result = object(value);
+  const result = strictObject(value, ["enabled", "reason", "allowOwners"]);
   if (typeof result.enabled !== "boolean") throw errors.inputInvalid({ field: "enabled" });
   if (result.reason !== undefined && (typeof result.reason !== "string" || result.reason.length > 500)) throw errors.inputInvalid({ field: "reason" });
   if (result.allowOwners !== undefined && typeof result.allowOwners !== "boolean") throw errors.inputInvalid({ field: "allowOwners" });
@@ -271,7 +319,7 @@ function parseMaintenanceInput(value: unknown): { enabled: boolean; reason?: str
 }
 
 function parseBlockInput(value: unknown): Omit<BlockRecord, "createdAt"> {
-  const result = object(value);
+  const result = strictObject(value, ["subjectType", "subjectId", "reason", "expiresAt"]);
   if (!["user", "guild", "ip"].includes(String(result.subjectType))) throw errors.inputInvalid({ field: "subjectType" });
   if (typeof result.subjectId !== "string" || !result.subjectId || result.subjectId.length > 512) throw errors.inputInvalid({ field: "subjectId" });
   if (typeof result.reason !== "string" || !result.reason.trim() || result.reason.length > 500) throw errors.inputInvalid({ field: "reason" });
@@ -280,7 +328,7 @@ function parseBlockInput(value: unknown): Omit<BlockRecord, "createdAt"> {
 }
 
 function parseUnblockInput(value: unknown): { subjectType: BlockRecord["subjectType"]; subjectId: string } {
-  const result = object(value);
+  const result = strictObject(value, ["subjectType", "subjectId"]);
   if (!["user", "guild", "ip"].includes(String(result.subjectType))) throw errors.inputInvalid({ field: "subjectType" });
   if (typeof result.subjectId !== "string" || !result.subjectId || result.subjectId.length > 512) throw errors.inputInvalid({ field: "subjectId" });
   return { subjectType: result.subjectType as BlockRecord["subjectType"], subjectId: result.subjectId };

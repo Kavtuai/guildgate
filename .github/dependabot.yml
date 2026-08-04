@@ -4,9 +4,22 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+      time: "06:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 6
+    groups:
+      typescript-tooling:
+        patterns: ["typescript", "@types/*"]
+        update-types: ["patch", "minor"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+      day: monday
+      time: "06:30"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 4

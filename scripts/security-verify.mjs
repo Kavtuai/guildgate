@@ -5,7 +5,7 @@ const root = process.cwd();
 const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const failures = [];
 
-check(packageJson.version === "1.1.0", "package version must be 1.1.0");
+check(/^\d+\.\d+\.\d+$/u.test(packageJson.version), "package version must be valid semver");
 check(Object.keys(packageJson.dependencies ?? {}).length === 0, "the core package must not add runtime dependencies");
 check(packageJson.publishConfig?.access === "public", "publishConfig.access must stay public");
 

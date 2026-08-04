@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ActionContext, ActionDefinition, DefinedAction } from "./action.js";
+import { defineAction, isDefinedAction, type ActionContext, type ActionDefinition, type DefinedAction } from "./action.js";
 import { CacheManager } from "./cache.js";
 import { hmacSha256, redactValue, sha256, stableStringify } from "./crypto.js";
 import { asGuildGateError, errors, GuildGateError } from "./errors.js";
@@ -152,6 +152,9 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     action: DefinedAction<I, O>,
     request: RequestEnvelope,
   ): Promise<ActionExecutionResult<O>> {
+    if (!isDefinedAction(action)) {
+      throw errors.configuration("Actions must be created by this GuildGate kernel instance");
+    }
     const definition = action.definition;
     const requestId = request.requestId ?? randomUUID();
     const locale = resolveLocale(request.locale, defaultLocale);
@@ -638,7 +641,7 @@ export function createGuildGate(config: GuildGateConfig): GuildGateKernel {
     csrf,
     action<I, O>(definition: ActionDefinition<I, O>): DefinedAction<I, O> {
       validateActionDefinition(definition, auditFailClosed);
-      return Object.freeze({ definition: Object.freeze({ ...definition }) });
+      return defineAction(definition);
     },
     execute: executeAction,
     async createSession(input) {

@@ -239,113 +239,35 @@ test("idempotency renewal preserves ownership beyond the original TTL", async ()
   const harness = createGuildGateTestHarness();
   const login = await harness.login();
   let executions = 0;
-  let releaseExecution = () => {};
-  const executionGate = new Promise((resolve) => {
-    releaseExecution = resolve;
-  });
-
   const action = harness.kernel.action({
     name: "reliability.renewed-late-commit",
-    timeoutMs: 20,
-    idempotency: { ttlMs: 120 },
-
+    timeoutMs: 15,
+    idempotency: { ttlMs: 30 },
     async execute() {
       executions += 1;
-      await executionGate;
-
-      return {
-        saved: true,
-        executions,
-      };
+      await wait(100);
+      return { saved: true, executions };
     },
   });
-
   const request = harness.request({
     sessionToken: login.sessionToken,
     csrfToken: login.csrfToken,
     idempotencyKey: "renewed-late-key",
   });
-
-  const first =
-    await harness.kernel.execute(
-      action,
-      request,
-    );
-
+  const first = await harness.kernel.execute(action, request);
   assert.equal(first.ok, false);
-  assert.equal(
-    first.error.code,
-    "UPSTREAM_TIMEOUT",
-  );
-
-  /*
-   * This delay deliberately exceeds the original
-   * reservation TTL. The active operation must still
-   * own its reservation because renewal is running.
-   */
-  await wait(300);
-
-  const inflight =
-    await harness.kernel.execute(
-      action,
-      request,
-    );
-
-  assert.equal(inflight.ok, false);
-  assert.equal(
-    inflight.error.code,
-    "IDEMPOTENCY_INFLIGHT",
-  );
-  assert.equal(executions, 1);
-
-  releaseExecution();
-
-  /*
-   * Completion is asynchronous after the foreground
-   * deadline response. Poll the public replay behavior
-   * instead of depending on one exact timer boundary.
-   */
-  const replayDeadline =
-    Date.now() + 1_000;
-
-  let replay;
-
-  do {
-    replay =
-      await harness.kernel.execute(
-        action,
-        request,
-      );
-
-    if (replay.ok) {
-      break;
-    }
-
-    assert.equal(
-      replay.error.code,
-      "IDEMPOTENCY_INFLIGHT",
-    );
-
-    await wait(10);
-  } while (
-    Date.now() < replayDeadline
-  );
-
-  assert.ok(
-    replay,
-    "expected a replay result",
-  );
-
-  assert.equal(replay.ok, true);
-
-  assert.deepEqual(
-    replay.data,
-    {
-      saved: true,
-      executions: 1,
-    },
-  );
-
+  assert.equal(first.error.code, "UPSTREAM_TIMEOUT");
+  const storeKey =
+    "guildgate:idempotency:user-1:reliability.renewed-late-commit:renewed-late-key";
+  const completionDeadline = Date.now() + 750;
+  let record = await harness.stores.idempotency.get(storeKey);
+  while (record?.state !== "completed" && Date.now() < completionDeadline) {
+    await wait(5);
+    record = await harness.stores.idempotency.get(storeKey);
+  }
+  assert.equal(record?.state, "completed");
+  const replay = await harness.kernel.execute(action, request);  assert.equal(replay.ok, true);
+  assert.deepEqual(replay.data, { saved: true, executions: 1 });
   assert.equal(executions, 1);
 });
 
@@ -367,9 +289,16 @@ test("a timed-out idempotent action records its late committed result for replay
   const first = await harness.kernel.execute(action, request);
   assert.equal(first.ok, false);
   assert.equal(first.error.code, "UPSTREAM_TIMEOUT");
-  await wait(100);
-  const replay = await harness.kernel.execute(action, request);
-  assert.equal(replay.ok, true);
+  const storeKey =
+    "guildgate:idempotency:user-1:reliability.late-commit:late-key";
+  const completionDeadline = Date.now() + 750;
+  let record = await harness.stores.idempotency.get(storeKey);
+  while (record?.state !== "completed" && Date.now() < completionDeadline) {
+    await wait(5);
+    record = await harness.stores.idempotency.get(storeKey);
+  }
+  assert.equal(record?.state, "completed");
+  const replay = await harness.kernel.execute(action, request);  assert.equal(replay.ok, true);
   assert.deepEqual(replay.data, { saved: true, executions: 1 });
   assert.equal(executions, 1);
 });

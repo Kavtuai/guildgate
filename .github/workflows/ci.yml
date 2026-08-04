@@ -16,25 +16,30 @@ jobs:
         node-version: [22, 24]
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm test
       - run: npm run security:verify
-      - run: npm run pack:check
+      - run: npm run pack:inspect
+      - run: npm run secret:scan
 
   coverage:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run test:coverage
 
   service-integration:
@@ -68,11 +73,13 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm install --no-save pg@8.22.0 redis@6.1.0
       - run: npm run build
       - run: node --test tests/service-integration.test.mjs
@@ -81,10 +88,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run test:load
