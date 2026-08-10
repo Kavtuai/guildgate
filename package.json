@@ -149,7 +149,7 @@
     "provenance": true
   },
   "devDependencies": {
-    "@types/node": "22.19.15",
-    "typescript": "5.8.3"
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
   }
 }
